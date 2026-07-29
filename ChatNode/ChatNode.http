@@ -1,0 +1,6 @@
+@ChatNode_HostAddress = http://localhost:5064
+
+GET {{ChatNode_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

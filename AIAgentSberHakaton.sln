@@ -1,0 +1,28 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ChatNode", "ChatNode\ChatNode.csproj", "{42FABE54-A019-486C-A9B9-E9FE4C15719B}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Domain", "Domain\Domain.csproj", "{0DBEDD59-3A93-4C81-8721-08E2648A5123}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ConsoleClientForSignalR", "ConsoleClientForSignalR\ConsoleClientForSignalR.csproj", "{F6E2C8EC-CFD9-4F00-AFD8-C7EBE9597DC1}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{42FABE54-A019-486C-A9B9-E9FE4C15719B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{42FABE54-A019-486C-A9B9-E9FE4C15719B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{42FABE54-A019-486C-A9B9-E9FE4C15719B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{42FABE54-A019-486C-A9B9-E9FE4C15719B}.Release|Any CPU.Build.0 = Release|Any CPU
+		{0DBEDD59-3A93-4C81-8721-08E2648A5123}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{0DBEDD59-3A93-4C81-8721-08E2648A5123}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{0DBEDD59-3A93-4C81-8721-08E2648A5123}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{0DBEDD59-3A93-4C81-8721-08E2648A5123}.Release|Any CPU.Build.0 = Release|Any CPU
+		{F6E2C8EC-CFD9-4F00-AFD8-C7EBE9597DC1}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{F6E2C8EC-CFD9-4F00-AFD8-C7EBE9597DC1}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{F6E2C8EC-CFD9-4F00-AFD8-C7EBE9597DC1}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{F6E2C8EC-CFD9-4F00-AFD8-C7EBE9597DC1}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal
