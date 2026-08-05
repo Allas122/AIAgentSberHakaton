@@ -4,5 +4,7 @@ namespace ChatNode.Infrastructure.AI.Agents.Abstractions;
 
 public interface IAgent
 {
-    public Task<string> InvokeAsync(string prompt, IEnumerable<MessageHistoricalDto> messages,CancellationToken ct);
+    Task<string> InvokeAsync(string prompt, IEnumerable<MessageHistoricalDto> messages, CancellationToken ct) 
+        => InvokeAsync(prompt, ct);
+    Task<string> InvokeAsync(string prompt, CancellationToken ct);
 }

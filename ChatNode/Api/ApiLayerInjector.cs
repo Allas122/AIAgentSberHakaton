@@ -1,7 +1,6 @@
 ﻿using ChatNode.Api.Configuration;
-using ChatNode.Api.Rest.Messages.Chat;
 using ChatNode.Api.Rest.Validators;
-using ChatNode.Api.WebSocket.Messages.Messages;
+using ChatNode.Api.WebSockets.Hubs;
 using FluentValidation;
 using Scalar.AspNetCore;
 using SharpGrip.FluentValidation.AutoValidation.Mvc.Extensions;

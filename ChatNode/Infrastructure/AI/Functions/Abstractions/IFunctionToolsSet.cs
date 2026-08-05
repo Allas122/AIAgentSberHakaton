@@ -5,5 +5,5 @@ namespace ChatNode.Infrastructure.AI.Functions.Abstractions;
 
 public interface IFunctionToolsSet
 {
-    public static IReadOnlyList<IChatFunctionTool> FunctionTools { get; }
+    public IReadOnlyList<IChatFunctionTool> FunctionTools { get; }
 }

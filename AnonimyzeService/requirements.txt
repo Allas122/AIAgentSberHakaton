@@ -1,0 +1,6 @@
+grpcio>=1.60,<2
+protobuf>=4.25,<7
+torch>=2.2
+transformers>=4.40
+sentencepiece>=0.2
+python-dotenv>=1.0

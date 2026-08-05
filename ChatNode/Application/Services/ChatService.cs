@@ -3,7 +3,11 @@ using ChatNode.Application.Exceptions;
 using ChatNode.Application.Mappers;
 using ChatNode.Application.Services.Abstractons;
 using ChatNode.Infrastructure.AI.Agents;
+using ChatNode.Infrastructure.AI.Services.Abstractions;
 using ChatNode.Infrastructure.Dto;
+using ChatNode.Infrastructure.Storage;
+using ChatNode.Infrastructure.Storage.Abstractions;
+using ChatNode.Infrastructure.Tools.Abstractions;
 using Domain.Repositories;
 using Domain.ValueTypes;
 
@@ -12,7 +16,12 @@ namespace ChatNode.Application.Services;
 public class ChatService(
     IChatRepository chatRepository,
     IUserRepository userRepository,
-    AgentFactory agentFactory
+    IManualRepository manualRepository,
+    AgentFactory agentFactory,
+    IDocxAnonymizer docxAnonymizer,
+    IDocxTextExtractor docxTextExtractor,
+    IAnonymizeClient anonymizeClient,
+    IFileStorage fileStorage
     ) : IChatService
 {
     private async Task TryCheck(Guid chatId, Guid userId)
@@ -67,9 +76,10 @@ public class ChatService(
             SenderRole = m.SenderId == Guid.Empty ? UserRole.Agent : UserRole.User
         });
 
-        ConsultingAgent agent = agentFactory.CreateConsultingAgent(statusHandler, manualId);
-    
+        ConsultingAgent agent = agentFactory.CreateConsultingAgent(statusHandler, new AgentSession(manualId, chatId));
+
         var aiResponseText = await agent.InvokeAsync(dto.Content, history, ct);
+        aiResponseText = await anonymizeClient.DeanonymizeAsync(aiResponseText, chatId.ToString());
 
         var aiMessage = new MessageDto(null, aiResponseText, Guid.Empty, DateTime.Now, null);
         var aiRedisId = await chatRepository.AddMessageAsync(chatId, aiMessage.MapToMassage());
@@ -86,4 +96,62 @@ public class ChatService(
     {
         return (await chatRepository.GetUserChatsAsync(userId, limit, lastChatId)).Select(c=>c.MapToChatDto()).ToList();
     }
+    
+
+    public async Task<MessageDisplayDto> UploadGrantApplicationAsync(
+        Guid chatId,
+        Guid userId,
+        Guid manualId,
+        Stream fileStream,
+        string fileName,
+        string? content,
+        Action<string> statusHandler,
+        CancellationToken ct)
+    {
+        await TryCheck(chatId, userId);
+
+        if (await manualRepository.GetManualAsync(manualId) is null)
+        {
+            throw new NotFoundException("Методичка не найдена — проверять заявку не по чему.");
+        }
+
+        var sessionId = chatId.ToString();
+
+        statusHandler("Убираю персональные данные из документа...");
+        var anonymizedDocx = await docxAnonymizer.AnonymizeAsync(fileStream, sessionId, ct);
+
+        using var anonymizedStream = new MemoryStream(anonymizedDocx, writable: false);
+        var sections = docxTextExtractor.ExtractSections(anonymizedStream);
+
+        if (sections.Count == 0)
+        {
+            throw new InvalidDocumentException("Не удалось извлечь текст из документа — он пустой или состоит из картинок.");
+        }
+
+        var applicationId = Guid.NewGuid();
+        await fileStorage.UploadAsync(StorageKeys.GrantApplication(chatId, applicationId), anonymizedDocx, ct);
+
+        var userMessageContent = string.IsNullOrWhiteSpace(content)
+            ? $"Загружена заявка на проверку: {fileName}"
+            : $"Загружена заявка на проверку: {fileName}\n\n{content}";
+
+        await chatRepository.AddMessageAsync(chatId, new MessageDto(null, userMessageContent, userId, DateTime.Now, applicationId).MapToMassage());
+
+        var agent = agentFactory.CreateApplicationReviewAgent(statusHandler, new AgentSession(manualId, chatId));
+        var verdict = await agent.ReviewAsync(sections, content, ct);
+
+        verdict = await anonymizeClient.DeanonymizeAsync(verdict, sessionId);
+
+        var agentMessage = new MessageDto(null, verdict, Guid.Empty, DateTime.Now, null);
+        var agentRedisId = await chatRepository.AddMessageAsync(chatId, agentMessage.MapToMassage());
+
+        return new MessageDisplayDto(
+            Id: agentRedisId,
+            Content: verdict,
+            UserRole: UserRole.Agent,
+            userName: "ApplicationReviewAgent"
+        );
+    }
+
+
 }

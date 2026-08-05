@@ -1,4 +1,4 @@
-﻿using ChatNode.Infrastructure.Configuration.Options;
+using ChatNode.Infrastructure.Configuration.Options;
 using Microsoft.Extensions.Options;
 using StackExchange.Redis;
 
@@ -8,23 +8,17 @@ public class ValkeyIndexInitializer(
     IOptions<GigaChatOptions> options)
     : IHostedService
 {
-    private const string IndexName = "idx:manual_parts";
+    private const string ManualIndexName = "idx:manual_parts";
+    private const string PinIndexName = "idx:pins";
+
     private GigaChatOptions _options = options.Value;
-    
+
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         var db = redis.GetDatabase();
 
-        try
-        {
-            await db.ExecuteAsync("FT.INFO", IndexName);
-        }
-        catch (RedisServerException ex) when (ex.Message.Contains(
-                                                  "Index with name 'idx:manual_parts' not found in database 0"))
-        {
-            await CreateIndexAsync(db);
-            logger.Log(LogLevel.Information, $" Index '{IndexName}' successfully created.");
-        }
+        await EnsureIndexAsync(db, ManualIndexName, CreateManualIndexAsync);
+        await EnsureIndexAsync(db, PinIndexName, CreatePinIndexAsync);
     }
 
     public Task StopAsync(CancellationToken cancellationToken)
@@ -32,11 +26,22 @@ public class ValkeyIndexInitializer(
         return Task.CompletedTask;
     }
 
-    private async Task CreateIndexAsync(IDatabase db)
+    private async Task EnsureIndexAsync(IDatabase db, string indexName, Func<IDatabase, Task> create)
     {
-        string VectorDim = _options.EmbeddingDim.ToString(); 
+        try
+        {
+            await db.ExecuteAsync("FT.INFO", indexName);
+        }
+        catch (RedisServerException ex) when (ex.Message.Contains("not found", StringComparison.OrdinalIgnoreCase))
+        {
+            await create(db);
+            logger.LogInformation("Index '{IndexName}' successfully created.", indexName);
+        }
+    }
 
-        await db.ExecuteAsync("FT.CREATE", IndexName,
+    private async Task CreateManualIndexAsync(IDatabase db)
+    {
+        await db.ExecuteAsync("FT.CREATE", ManualIndexName,
             "ON", "HASH",
             "PREFIX", "1", "manual:",
             "SCHEMA",
@@ -47,7 +52,24 @@ public class ValkeyIndexInitializer(
             "content", "TEXT",
             "embedding", "VECTOR", "HNSW", "6",
             "TYPE", "FLOAT32",
-            "DIM", VectorDim,
+            "DIM", _options.EmbeddingDim.ToString(),
+            "DISTANCE_METRIC", "COSINE"
+        );
+    }
+
+    private async Task CreatePinIndexAsync(IDatabase db)
+    {
+        await db.ExecuteAsync("FT.CREATE", PinIndexName,
+            "ON", "HASH",
+            "PREFIX", "1", "pin:",
+            "SCHEMA",
+            "pinId", "TAG",
+            "sessionId", "TAG",
+            "type", "TAG",
+            "content", "TEXT",
+            "embedding", "VECTOR", "HNSW", "6",
+            "TYPE", "FLOAT32",
+            "DIM", _options.EmbeddingDim.ToString(),
             "DISTANCE_METRIC", "COSINE"
         );
     }

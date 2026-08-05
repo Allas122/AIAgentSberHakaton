@@ -58,6 +58,20 @@ public static class GigaChatCertificateHelper
             }
         }
 
+        Console.WriteLine(
+            $"[GIGACHAT TLS]: сертификат отклонён. ошибки={sslPolicyErrors}, " +
+            $"subject={((X509Certificate2)certificate).Subject}, " +
+            $"issuer={((X509Certificate2)certificate).Issuer}");
+
+        foreach (var element in chain.ChainElements)
+        {
+            var status = element.ChainElementStatus.Length == 0
+                ? "ok"
+                : string.Join(", ", element.ChainElementStatus.Select(s => s.Status.ToString()));
+
+            Console.WriteLine($"[GIGACHAT TLS]:   цепочка: {element.Certificate.Subject} ({status})");
+        }
+
         return false;
     }
 

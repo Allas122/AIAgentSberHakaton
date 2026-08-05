@@ -2,5 +2,6 @@
 
 public interface IAnonymizeClient
 {
-    Task<string> AnonymizeAsync(string text);
+    Task<string> AnonymizeAsync(string text, string sessionId);
+    Task<string> DeanonymizeAsync(string text, string sessionId);
 }

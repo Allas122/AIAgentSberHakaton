@@ -16,4 +16,15 @@ public interface IChatService
         CancellationToken ct
     );
     public Task<List<ChatDto>> GetUserChatsAsync(Guid userId, int limit, Guid? lastChatId);
+
+    public Task<MessageDisplayDto> UploadGrantApplicationAsync(
+        Guid chatId,
+        Guid userId,
+        Guid manualId,
+        Stream fileStream,
+        string fileName,
+        string? content,
+        Action<string> statusHandler,
+        CancellationToken ct
+    );
 }

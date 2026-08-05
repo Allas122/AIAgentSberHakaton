@@ -14,4 +14,5 @@ public interface IManualRepository
     public Task<ManualPart?> GetManualPartAsync(Guid manualId, Guid partId);
 
     public Task<IEnumerable<ManualPart>> KnnSearchManualPartAsync(string searchTerm, int limit, Guid? manualId = null);
+    public Task<IEnumerable<Guid>> GetManualIdsAsync();
 }

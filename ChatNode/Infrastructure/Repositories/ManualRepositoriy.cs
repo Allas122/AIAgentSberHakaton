@@ -22,6 +22,7 @@ public class ManualRepository(
             new HashEntry("title", manual.Title),
             new HashEntry("navigation", manual.Navigation)
         ]);
+        await database.SetAddAsync("all_manual_ids", manualId.ToString());
         return manualId;
     }
 
@@ -44,15 +45,16 @@ public class ManualRepository(
         var server = redis.GetServer(redis.GetEndPoints().First());
         var keys = server.Keys(database.Database, $"manual:{id}*").ToArray();
         if (keys.Length > 0) await database.KeyDeleteAsync(keys);
+        await database.SetRemoveAsync("all_manual_ids", id.ToString());
     }
 
     public async Task<Guid> CreateManualPartAsync(ManualPart part)
     {
         var textToEmbed = $"{part.Title} {part.Navigation} {part.Content}";
 
-        if (textToEmbed.Length > 1200) 
+        if (textToEmbed.Length > 2000) 
         {
-            textToEmbed = textToEmbed.Substring(0, 1200);
+            textToEmbed = textToEmbed.Substring(0, 2000);
         }
 
         var embedding = await embeddingClient.GetEmbeddingAsync(textToEmbed);
@@ -85,7 +87,7 @@ public class ManualRepository(
 
     public async Task DeleteManualPartAsync(Guid id)
     {
-        var result = await database.ExecuteAsync("FT.SEARCH", IndexName, $"@partId:{{{id}}}", "NOCONTENT");
+        var result = await database.ExecuteAsync("FT.SEARCH", IndexName, $"@partId:{{{EscapeTag(id)}}}", "NOCONTENT");
         var rows = (RedisResult[])result!;
         if (rows.Length > 1) 
         {
@@ -99,7 +101,7 @@ public class ManualRepository(
         var vectorBytes = VectorToBytes(embedding);
 
         var filter = manualId.HasValue
-            ? $"@manualId:{{{manualId.Value}}}"
+            ? $"@manualId:{{{EscapeTag(manualId.Value)}}}"
             : "*";
 
         var results = await database.ExecuteAsync("FT.SEARCH", IndexName,
@@ -109,6 +111,14 @@ public class ManualRepository(
 
         return ParseSearchResponse(results);
     }
+
+    public async Task<IEnumerable<Guid>> GetManualIdsAsync()
+    {
+        var members = await database.SetMembersAsync("all_manual_ids");
+        return members.Select(m => Guid.Parse(m.ToString()));
+    }
+
+    private static string EscapeTag(Guid value) => value.ToString().Replace("-", "\\-");
 
     private byte[] VectorToBytes(IReadOnlyList<double> vector)
     {
@@ -151,4 +161,5 @@ public class ManualRepository(
 
         return list;
     }
+    
 }

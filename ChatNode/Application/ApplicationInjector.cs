@@ -9,6 +9,7 @@ public static class ApplicationInjector
     {
         services.AddScoped<IUserService, UserService>();
         services.AddScoped<IChatService, ChatService>();
+        services.AddScoped<IManualService, ManualService>();
         return services;
     }
 }

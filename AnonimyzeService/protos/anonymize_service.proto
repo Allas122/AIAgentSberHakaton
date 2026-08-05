@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+option csharp_namespace = "ChatNode.Infrastructure.AI.Generated";
+
+service NerService {
+  rpc ExtractEntities (NerRequest) returns (NerResponse);
+}
+
+message NerRequest {
+  string text = 1;
+}
+
+message Entity {
+  string text = 1;
+  string type = 2;
+  int32 start = 3;
+  int32 end = 4;
+}
+
+message NerResponse {
+  repeated Entity entities = 1;
+}
