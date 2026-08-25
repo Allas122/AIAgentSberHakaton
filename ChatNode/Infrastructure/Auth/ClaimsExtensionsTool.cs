@@ -1,9 +1,16 @@
 ﻿using System.Security.Claims;
+using Domain.ValueTypes;
 
 namespace ChatNode.Infrastructure.Tools;
 
 public static class ClaimsExtensions
 {
+    public static UserRole GetUserRole(this ClaimsPrincipal user)
+    {
+        var value = user.FindFirst(ClaimTypes.Role)?.Value;
+        return Enum.TryParse<UserRole>(value, out var role) ? role : UserRole.None;
+    }
+
     public static Guid GetUserId(this ClaimsPrincipal user)
     {
         var value = user.FindFirst(ClaimTypes.NameIdentifier)?.Value;

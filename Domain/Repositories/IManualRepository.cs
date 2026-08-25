@@ -8,6 +8,7 @@ public interface IManualRepository
     public Task DeleteManualAsync(Guid id);
     public Task<Manual?> GetManualAsync(Guid id);
     public Task UpdateManualAsync(Manual manual);
+    public Task<bool> SetManualStatusAsync(ManualStatus status);
 
     public Task<Guid> CreateManualPartAsync(ManualPart manual);
     public Task DeleteManualPartAsync(Guid id);
@@ -15,4 +16,5 @@ public interface IManualRepository
 
     public Task<IEnumerable<ManualPart>> KnnSearchManualPartAsync(string searchTerm, int limit, Guid? manualId = null);
     public Task<IEnumerable<Guid>> GetManualIdsAsync();
+    public Task<IReadOnlyList<Manual>> GetManualsAsync();
 }

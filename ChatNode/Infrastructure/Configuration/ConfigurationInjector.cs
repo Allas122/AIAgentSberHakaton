@@ -8,9 +8,12 @@ public static class ConfigurationInjector
     {
         services.Configure<ExpirationPolicyOption>(configuration.GetSection("ExpirationPolicy"));
         services.Configure<JwtOptions>(configuration.GetSection("Jwt"));
+        services.Configure<StaffAccountsOptions>(configuration.GetSection("StaffAccounts"));
         services.Configure<GigaChatOptions>(configuration.GetSection("GigaChat"));
         services.Configure<WebSocketOption>(configuration.GetSection("WebSocket"));
         services.Configure<S3Options>(configuration.GetSection("S3"));
+        services.Configure<ManualUploadOptions>(configuration.GetSection("ManualUpload"));
+        services.Configure<CachePolicyOption>(configuration.GetSection("CachePolicy"));
         return services;
     }
 }

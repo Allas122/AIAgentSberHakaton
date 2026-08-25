@@ -3,3 +3,5 @@
 public record AuthResponse(string AccessToken, string RefreshToken, Guid UserId);
 
 public record RefreshRequest(string AccessToken, string RefreshToken);
+
+public record LoginRequest(string Login, string Password);

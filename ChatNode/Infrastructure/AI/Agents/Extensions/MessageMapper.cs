@@ -1,4 +1,4 @@
-﻿using ChatNode.Infrastructure.Dto;
+using ChatNode.Infrastructure.Dto;
 using Domain.ValueTypes;
 using GigaChat.Net.Models;
 
@@ -11,7 +11,8 @@ public static class MessageMapper
         return message.SenderRole switch
         {
             UserRole.User => Messages.User(message.Content),
-            UserRole.Agent => Messages.Assistant(message.Content)
+            UserRole.Agent => Messages.Assistant(message.Content),
+            _ => null
         };
     }
 }

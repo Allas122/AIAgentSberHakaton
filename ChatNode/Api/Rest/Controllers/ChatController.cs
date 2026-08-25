@@ -1,68 +1,83 @@
-﻿
+
 using ChatNode.Api.Rest.Mappers;
 using ChatNode.Api.Rest.Messages.Chat;
-using ChatNode.Api.WebSockets.Hubs;
 using ChatNode.Application.Services.Abstractons;
-using ChatNode.Infrastructure.AI.Services.Abstractions;
-using ChatNode.Infrastructure.Auth.Abstractions;
+using ChatNode.Infrastructure.Review;
 using ChatNode.Infrastructure.Tools;
+using Domain.ValueTypes;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.AspNetCore.SignalR;
 
 namespace ChatNode.Api.Controllers;
 
 [ApiController]
 [Authorize]
 [Route("api/chat")]
-public class ChatController(
-    IChatService chatService,
-    IHubContext<ChatHub> chatHub
-    ) : ControllerBase
+public class ChatController(IChatService chatService) : ControllerBase
 {
     [HttpPost]
     public async Task<CreateChatResponse> CreateChat([FromBody] CreateChatRequest request)
     {
         var userId = HttpContext.User.GetUserId();
-        var chatId = await chatService.CreateChatAsync(request.title, userId);
+        var chatId = await chatService.CreateChatAsync(request.title, userId, request.kind);
         return new CreateChatResponse(chatId);
     }
 
     [HttpGet]
-    public async Task<List<Chat>> GetChatList(Guid? lastChatId,int limit = 10)
+    public async Task<List<Chat>> GetChatList(
+        Guid? lastChatId,
+        int limit = 10,
+        [FromQuery] ChatKind kind = ChatKind.Grant)
     {
         var userId = HttpContext.User.GetUserId();
-        return (await chatService.GetUserChatsAsync(userId,limit, lastChatId)).Select(c=>c.MapToChat()).ToList();
+        return (await chatService.GetUserChatsAsync(userId, limit, lastChatId, kind)).Select(c => c.MapToChat()).ToList();
     }
     
-    [HttpPost("{chatId}/files")]
+    [HttpPost("{chatId:guid}/files")]
     [Consumes("multipart/form-data")]
-    public async Task<UploadFileResponse> UploadFileInChat(
+    public async Task<ActionResult<UploadFileResponse>> UploadFileInChat(
         Guid chatId,
         [FromForm] UploadFileRequest request,
         CancellationToken ct)
     {
         var userId = HttpContext.User.GetUserId();
-        var userGroup = chatHub.Clients.Group($"user:{userId}");
-
-        await userGroup.SendAsync("FileStatusChanged",
-            new { FileName = request.File.FileName, Status = "Uploaded" }, ct);
 
         await using var fileStream = request.File.OpenReadStream();
 
-        var review = await chatService.UploadGrantApplicationAsync(
+        var queued = await chatService.UploadGrantApplicationAsync(
             chatId,
             userId,
             request.ManualId,
             fileStream,
             request.File.FileName,
             request.Content,
-            status => userGroup.SendAsync("AiStatusUpdate", status, ct),
+            request.ContestKind,
             ct);
 
-        await userGroup.SendAsync("FileStatusChanged",
-            new { FileName = request.File.FileName, Status = "Reviewed" }, ct);
+        return Accepted(new UploadFileResponse(
+            queued.MessageId,
+            queued.ApplicationId,
+            queued.DocumentId,
+            queued.FileName,
+            queued.QueueDepth));
+    }
 
-        return new UploadFileResponse(review.Id, review.Content);
+    [HttpDelete("{chatId:guid}")]
+    public async Task<IActionResult> DeleteChat(Guid chatId, CancellationToken ct)
+    {
+        await chatService.DeleteChatAsync(chatId, HttpContext.User.GetUserId(), ct);
+        return NoContent();
+    }
+
+    [HttpGet("{chatId:guid}/messages/{messageId}/review.docx")]
+    public async Task<IActionResult> ExportReview(Guid chatId, string messageId)
+    {
+        var userId = HttpContext.User.GetUserId();
+        var file = await chatService.ExportReviewAsync(chatId, userId, messageId);
+
+        return File(
+            file.Content,
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            file.FileName);
     }
 }

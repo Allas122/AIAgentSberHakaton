@@ -1,50 +1,67 @@
 using ChatNode.Infrastructure.AI.Agents;
+using ChatNode.Infrastructure.AI.Generated;
 using ChatNode.Infrastructure.AI.Policy;
 using ChatNode.Infrastructure.AI.Services;
 using ChatNode.Infrastructure.AI.Services.Abstractions;
-using ChatNode.Infrastructure.Configuration.Options;
 using GigaChat.Net;
-using GigaChat.Net.AspNetCore;
+using Grpc.Net.Client;
 using Microsoft.Extensions.Options;
-using StackExchange.Redis;
+using GigaChatOptions = ChatNode.Infrastructure.Configuration.Options.GigaChatOptions;
 
 namespace ChatNode.Infrastructure.AI.Configuration;
 
 public static class AiConfigurationExtension
 {
+    private const string GigaChatHttpClientName = "GigaChat";
+
     public static void AddGigaChatInfrastructure(this IServiceCollection services, IConfiguration configuration)
     {
-        services.AddHttpClient();
+        services.AddSingleton<GigaChatCertificateHelper>();
 
-        services.AddHttpClient("RussianCerts")
-            .ConfigurePrimaryHttpMessageHandler(() => GigaChatCertificateHelper.CreateHandlerWithRussianCerts())
-            .SetHandlerLifetime(TimeSpan.FromMinutes(5));
-
-        services.AddTransient<IGigaChatClient>(sp =>
-        {
-            var myOptions = sp.GetRequiredService<IOptions<ChatNode.Infrastructure.Configuration.Options.GigaChatOptions>>().Value;
-            var settings = new Settings()
+        services.AddHttpClient(GigaChatHttpClientName)
+            .ConfigurePrimaryHttpMessageHandler(sp =>
+                sp.GetRequiredService<GigaChatCertificateHelper>().CreateHandlerWithRussianCerts())
+            .AddHttpMessageHandler(sp =>
             {
-                Credentials = myOptions.AuthorizationKey,
-                Scope =  myOptions.Scope,
-                BaseUrl = myOptions.BaseUrl,
-                AuthUrl = myOptions.AuthUrl,
-                VerifySslCerts =  true,
-                Timeout = myOptions.TimeoutMinutes * 60,
+                var options = sp.GetRequiredService<IOptions<GigaChatOptions>>().Value;
 
-                MaxRetries = myOptions.MaxRetries,
-                RetryBackoffFactor = myOptions.RetryBackoffFactor,
-                RetryOnStatusCodes = myOptions.RetryOnStatusCodes,
+                return new TransientHttpRetryHandler(
+                    options.TransportRetries,
+                    options.RetryBackoffFactor,
+                    sp.GetRequiredService<ILogger<TransientHttpRetryHandler>>());
+            })
+            .SetHandlerLifetime(Timeout.InfiniteTimeSpan);
+
+        services.AddSingleton<IGigaChatClient>(sp =>
+        {
+            var options = sp.GetRequiredService<IOptions<GigaChatOptions>>().Value;
+            var httpClientFactory = sp.GetRequiredService<IHttpClientFactory>();
+
+            var settings = new Settings
+            {
+                Credentials = options.AuthorizationKey,
+                Scope = options.Scope,
+                BaseUrl = options.BaseUrl,
+                AuthUrl = options.AuthUrl,
+                VerifySslCerts = true,
+                Timeout = options.TimeoutMinutes * 60,
+
+                MaxRetries = options.MaxRetries,
+                RetryBackoffFactor = options.RetryBackoffFactor,
+                RetryOnStatusCodes = options.RetryOnStatusCodes,
             };
-            return new GigaChatClient(
+
+            return GigaChatClient.CreateWithHttpClient(
                 settings,
-                CreateResilientHandler(myOptions),
-                CreateResilientHandler(myOptions));
+                httpClientFactory.CreateClient(GigaChatHttpClientName),
+                httpClientFactory.CreateClient(GigaChatHttpClientName));
         });
+
         services.AddTransient<AgentFactory>();
 
         services.AddScoped<IEmbeddingClient, EmbeddingClient>();
-        services.AddScoped<IAnonymizeClient>(sp =>
+
+        services.AddSingleton(_ =>
         {
             var url = configuration.GetConnectionString("AnonimyzeService");
 
@@ -53,16 +70,11 @@ public static class AiConfigurationExtension
                 throw new InvalidOperationException("Connection string 'AnonimyzeService' is not found.");
             }
 
-            var redis = sp.GetRequiredService<IDatabase>();
-
-            return new AnonymizeClient(redis, url);
+            return GrpcChannel.ForAddress(url);
         });
+
+        services.AddSingleton(sp => new NerService.NerServiceClient(sp.GetRequiredService<GrpcChannel>()));
+
+        services.AddScoped<IAnonymizeClient, AnonymizeClient>();
     }
-    
-    private static HttpMessageHandler CreateResilientHandler(
-        ChatNode.Infrastructure.Configuration.Options.GigaChatOptions options) =>
-        new TransientHttpRetryHandler(options.TransportRetries, options.RetryBackoffFactor)
-        {
-            InnerHandler = GigaChatCertificateHelper.CreateHandlerWithRussianCerts()
-        };
 }

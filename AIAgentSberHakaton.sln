@@ -4,8 +4,6 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ChatNode", "ChatNode\ChatNo
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Domain", "Domain\Domain.csproj", "{0DBEDD59-3A93-4C81-8721-08E2648A5123}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ConsoleClientForSignalR", "ConsoleClientForSignalR\ConsoleClientForSignalR.csproj", "{F6E2C8EC-CFD9-4F00-AFD8-C7EBE9597DC1}"
-EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU

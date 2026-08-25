@@ -1,5 +1,6 @@
-﻿using System.Globalization;
+using System.Globalization;
 using Domain.Entities;
+using Domain.ValueTypes;
 using StackExchange.Redis;
 
 namespace ChatNode.Infrastructure.Mappers;
@@ -13,7 +14,10 @@ public static class ValkeyChatMapper
         return new Chat(
             id,
             Guid.Parse(dict["UserId"]),
-            dict["Title"]
+            dict["Title"],
+            dict.TryGetValue("Kind", out var kind) && Enum.TryParse<ChatKind>(kind, out var parsed)
+                ? parsed
+                : ChatKind.Grant
         );
     }
 
@@ -22,7 +26,8 @@ public static class ValkeyChatMapper
         return new HashEntry[]
         {
             new("UserId", chat.UserId.ToString()),
-            new("Title", chat.Title)
+            new("Title", chat.Title),
+            new("Kind", chat.Kind.ToString())
         };
     }
 
@@ -35,15 +40,24 @@ public static class ValkeyChatMapper
             Content: dict["Content"],
             SenderId: Guid.Parse(dict["SenderId"]),
             CreateAt: DateTime.Parse(dict["CreateAt"], null, DateTimeStyles.RoundtripKind),
-            FileId: dict.TryGetValue("FileId", out var fileId) && Guid.TryParse(fileId, out var guid) ? guid : null
+            DocumentId: dict.TryGetValue("DocumentId", out var docId) && Guid.TryParse(docId, out var guid)
+                ? guid
+                : null,
+            FileName: dict.GetValueOrDefault("FileName")
         );
     }
 
     public static Message ToMessage(this RedisResult result)
     {
-        var entryArray = (RedisResult[])result;
+        RedisResult[]? entryArray = (RedisResult[]?)result;
+        if (entryArray is null || entryArray.Length < 2)
+            throw new InvalidOperationException("Запись потока сообщений пуста или неполна.");
+
         var streamId = entryArray[0].ToString();
-        var fieldArray = (RedisResult[])entryArray[1];
+
+        RedisResult[]? fieldArray = (RedisResult[]?)entryArray[1];
+        if (fieldArray is null)
+            throw new InvalidOperationException($"У записи потока {streamId} нет полей.");
 
         var dict = new Dictionary<string, string?>();
         for (int i = 0; i < fieldArray.Length; i += 2)
@@ -56,7 +70,10 @@ public static class ValkeyChatMapper
             Content: dict["Content"] ?? string.Empty,
             SenderId: Guid.Parse(dict["SenderId"]!),
             CreateAt: DateTime.Parse(dict["CreateAt"]!, null, DateTimeStyles.RoundtripKind),
-            FileId: dict.TryGetValue("FileId", out var fId) && Guid.TryParse(fId, out var guid) ? guid : null
+            DocumentId: dict.TryGetValue("DocumentId", out var dId) && Guid.TryParse(dId, out var guid)
+                ? guid
+                : null,
+            FileName: dict.GetValueOrDefault("FileName")
         );
     }
 
@@ -69,9 +86,14 @@ public static class ValkeyChatMapper
             new("CreateAt", message.CreateAt.ToString("O"))
         };
 
-        if (message.FileId.HasValue)
+        if (message.DocumentId.HasValue)
         {
-            entries.Add(new("FileId", message.FileId.Value.ToString()));
+            entries.Add(new("DocumentId", message.DocumentId.Value.ToString()));
+        }
+
+        if (!string.IsNullOrEmpty(message.FileName))
+        {
+            entries.Add(new("FileName", message.FileName));
         }
 
         return entries.ToArray();

@@ -15,25 +15,36 @@ public class DocxAnonymizer(IAnonymizeClient anonymizer) : IDocxAnonymizer
 
         using (var wordDoc = WordprocessingDocument.Open(memoryStream, true))
         {
-            var body = wordDoc.MainDocumentPart?.Document?.Body;
-            if (body is null) throw new InvalidOperationException("Документ не содержит тела — файл повреждён или это не docx.");
+            var document = wordDoc.MainDocumentPart?.Document;
+            var body = document?.Body;
 
-            foreach (var paragraph in body.Descendants<Paragraph>())
+            if (document is null || body is null)
+            {
+                throw new InvalidOperationException("Документ не содержит тела — файл повреждён или это не docx.");
+            }
+
+            var paragraphs = body.Descendants<Paragraph>()
+                .Where(paragraph => !string.IsNullOrWhiteSpace(paragraph.InnerText))
+                .ToList();
+
+            if (paragraphs.Count > 0)
             {
                 ct.ThrowIfCancellationRequested();
 
-                var originalText = paragraph.InnerText;
-                if (string.IsNullOrWhiteSpace(originalText)) continue;
+                var originals = paragraphs.Select(paragraph => paragraph.InnerText).ToList();
 
-                var anonymizedText = await anonymizer.AnonymizeAsync(originalText, sessionId);
+                var anonymized = await anonymizer.AnonymizeBatchAsync(originals, sessionId, ct);
 
-                if (originalText == anonymizedText) continue;
+                for (var i = 0; i < paragraphs.Count; i++)
+                {
+                    if (originals[i] == anonymized[i]) continue;
 
-                paragraph.RemoveAllChildren<Run>();
-                paragraph.AppendChild(new Run(new Text(anonymizedText)));
+                    paragraphs[i].RemoveAllChildren<Run>();
+                    paragraphs[i].AppendChild(new Run(new Text(anonymized[i])));
+                }
             }
 
-            wordDoc.MainDocumentPart!.Document.Save();
+            document.Save();
         }
 
         return memoryStream.ToArray();

@@ -237,6 +237,17 @@ AppPackages/
 
 CLAUDE.md
 .claude/
+.cursor/
+.aider*
+.codeium/
+.continue/
+.github/copilot-instructions.md
+AGENTS.md
+GEMINI.md
+
+FIXES.md
+PLAN.md
+SPEC.md
 
 __pycache__/
 *.py[cod]

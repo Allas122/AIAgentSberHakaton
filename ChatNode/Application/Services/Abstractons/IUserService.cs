@@ -6,4 +6,5 @@ public interface IUserService
 {
     public Task<Guid> CreateGuestAsync();
     public Task<UserDto?> GetUserAsync(Guid id);
+    public Task<UserDto?> LoginAsync(string login, string password);
 }

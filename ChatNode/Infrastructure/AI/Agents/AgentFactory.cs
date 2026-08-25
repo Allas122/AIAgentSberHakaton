@@ -8,7 +8,7 @@ namespace ChatNode.Infrastructure.AI.Agents;
 
 public class AgentFactory(IServiceProvider sp)
 {
-    public ConsultingAgent CreateConsultingAgent(Action<string> statusHandler, AgentSession session)
+    public ConsultingAgent CreateConsultingAgent(Func<string, Task> statusHandler, AgentSession session)
     {
         return ActivatorUtilities.CreateInstance<ConsultingAgent>(sp, statusHandler, session);
     }
@@ -18,9 +18,14 @@ public class AgentFactory(IServiceProvider sp)
         return ActivatorUtilities.CreateInstance<ManualParserAgent>(sp, manualId);
     }
 
-    public ApplicationReviewAgent CreateApplicationReviewAgent(Action<string> statusHandler, AgentSession session)
+    public ApplicationReviewAgent CreateApplicationReviewAgent(Func<string, Task> statusHandler, AgentSession session)
     {
         return ActivatorUtilities.CreateInstance<ApplicationReviewAgent>(sp, statusHandler, session);
+    }
+
+    public LetterAgent CreateLetterAgent(LetterSession session)
+    {
+        return ActivatorUtilities.CreateInstance<LetterAgent>(sp, session);
     }
     
 }

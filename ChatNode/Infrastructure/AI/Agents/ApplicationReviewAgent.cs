@@ -1,9 +1,13 @@
+using Domain.ValueTypes;
 using System.Text;
 using ChatNode.Infrastructure.AI.Agents.Abstractions;
 using ChatNode.Infrastructure.AI.Functions;
+using ChatNode.Infrastructure.AI.Metering;
 using ChatNode.Infrastructure.AI.Policy;
+using ChatNode.Infrastructure.AI.Review;
 using ChatNode.Infrastructure.Configuration.Options;
 using ChatNode.Infrastructure.Dto;
+using ChatNode.Infrastructure.Tools;
 using Domain.Entities;
 using Domain.Repositories;
 using GigaChat.Net;
@@ -41,20 +45,46 @@ public class ApplicationReviewAgent : IAgent
     private const int OutageThreshold = 3;
     private const int EllipsisReserve = 4;
     private const int MaxReportedFailures = 5;
-    private const int CriteriaSearchLimit = 5;
-    private const int MaxCriteriaNamesChars = 400;
+    private const int CriteriaSearchLimit = 25;
+    private const int CriteriaSourceChars = 24000;
+    private const int MinCriteriaSourceChars = 2000;
+
+    private const int CoverageOutlineChars = 6000;
+    private const int OutlineTitleChars = 120;
+
+    private const int MaxCriteriaNamesChars = 1200;
     private const int MinMemoChars = 150;
     private const int MemoLineChars = 220;
     private const int MemoBudget = 3000;
     private const int MemoHeadChars = 400;
-    private const string CriteriaQuery = "критерии оценки заявки баллы";
+    private readonly ManualCitationRegistry _citations = new();
+
+    private static string CriteriaQueryFor(ContestKind kind) => kind switch
+    {
+        ContestKind.Nonprofit =>
+            "критерии оценки проектов конкурс для некоммерческих организаций НКО",
+        ContestKind.University =>
+            "критерии оценки проектов конкурс для образовательных организаций высшего образования вузов",
+        _ =>
+            "критерии оценки проектов конкурс для физических лиц"
+    };
+
+    private static string ContestName(ContestKind kind) => kind switch
+    {
+        ContestKind.Nonprofit => "Конкурс для некоммерческих организаций (НКО)",
+        ContestKind.University => "Конкурс для образовательных организаций высшего образования (вузов)",
+        _ => "Конкурс для физических лиц"
+    };
     private const string ToolCallLimitMarker = "exceeded the maximum of";
 
     private readonly IGigaChatClient _gigaChatClient;
     private readonly IManualRepository _manualRepository;
     private readonly IPinRepository _pinRepository;
     private readonly GigaChatOptions _gigaChatOptions;
-    private readonly Action<string> _statusHandler;
+    private readonly ITokenMeter _tokenMeter;
+    private readonly Func<string, Task> _statusHandler;
+    private readonly ILoggerFactory _loggerFactory;
+    private readonly ILogger<ApplicationReviewAgent> _logger;
     private readonly Guid _chatId;
     private readonly Guid _manualId;
 
@@ -65,20 +95,29 @@ public class ApplicationReviewAgent : IAgent
         IManualRepository manualRepository,
         IPinRepository pinRepository,
         IOptions<GigaChatOptions> gigaChatOptions,
-        Action<string> statusHandler,
+        ITokenMeter tokenMeter,
+        ILoggerFactory loggerFactory,
+        Func<string, Task> statusHandler,
         AgentSession session)
     {
         _gigaChatClient = gigaChatClient;
         _manualRepository = manualRepository;
         _pinRepository = pinRepository;
         _gigaChatOptions = gigaChatOptions.Value;
+        _tokenMeter = tokenMeter;
+        _loggerFactory = loggerFactory;
+        _logger = loggerFactory.CreateLogger<ApplicationReviewAgent>();
         _statusHandler = statusHandler;
         _chatId = session.ChatId;
-        _manualId = session.ManualId;
+        _manualId = session.ManualId
+                    ?? throw new InvalidOperationException(
+                        "Разбор заявки запущен без методички — сверять не с чем.");
     }
 
     public async Task<string> ReviewAsync(
         IReadOnlyList<ApplicationSectionDto> sections,
+        IReadOnlyList<string> documentLines,
+        ContestKind contestKind,
         string? userComment,
         CancellationToken ct)
     {
@@ -89,21 +128,43 @@ public class ApplicationReviewAgent : IAgent
 
         var pieces = PackSections(sections);
         var failedSections = new List<(ApplicationSectionDto Section, int Number)>();
+        var reviewedPieces = 0;
 
-        Console.WriteLine(
-            $"[REVIEW STARTED]: model={_gigaChatOptions.ApplicationReviewAgentModel}, " +
-            $"разделов={sections.Count}, запросов={pieces.Count}, бюджет={Budget} симв., " +
-            $"вызовов на фрагмент={SectionToolCalls}");
+        _logger.LogInformation(
+            "Разбор заявки {ChatId}: старт, model={Model}, разделов={Sections}, запросов={Pieces}, " +
+            "бюджет={Budget} симв., вызовов на фрагмент={ToolCalls}",
+            _chatId,
+            _gigaChatOptions.ApplicationReviewAgentModel,
+            sections.Count,
+            pieces.Count,
+            Budget,
+            SectionToolCalls);
 
         try
         {
-            _statusHandler("Проверяю доступность сервиса ИИ...");
+            await _statusHandler("Проверяю доступность сервиса ИИ...");
 
             if (!await IsServiceReachableAsync(ct)) return ServiceUnavailableMessage();
 
-            _statusHandler("Поднимаю критерии оценки из методички...");
-            var criteria = await ExtractCriteriaAsync(ct);
-            var criteriaNames = ToCriteriaNames(criteria);
+            var dropped = await _pinRepository.DeletePinsAsync(_chatId);
+            if (dropped > 0)
+            {
+                _logger.LogInformation(
+                    "Разбор заявки {ChatId}: удалено {Dropped} заметок от предыдущей проверки",
+                    _chatId,
+                    dropped);
+                await _statusHandler("Убираю заметки от предыдущей проверки...");
+            }
+
+            await _statusHandler("Поднимаю критерии оценки из методички...");
+            var criteriaText = await ExtractCriteriaAsync(contestKind, ct);
+            var criteria = CriteriaParser.Parse(criteriaText);
+            var criteriaNames = ToCriteriaList(criteria);
+
+            _logger.LogInformation(
+                "Разбор заявки {ChatId}: разобрано {Criteria} критериев",
+                _chatId,
+                criteria.Count);
 
             var outcome = await ReviewSectionsAsync(pieces, userComment, criteriaNames, ct);
 
@@ -118,13 +179,25 @@ public class ApplicationReviewAgent : IAgent
             }
 
             var reviewed = pieces.Count - failedSections.Count;
+            reviewedPieces = reviewed;
 
-            _statusHandler("Сверяю состав заявки с критериями...");
-            var coverage = await CheckCoverageAsync(sections, criteria, ct);
+            await _statusHandler("Сверяю состав заявки с критериями...");
+            var coverage = await CheckCoverageAsync(sections, criteria, criteriaText, ct);
 
-            _statusHandler("Собираю итоговый разбор заявки...");
+            await _statusHandler("Считаю смету и плановые показатели...");
+            var numbers = ApplicationNumbersAnalyzer.Analyze(documentLines);
+            _logger.LogInformation(
+                "Разбор заявки {ChatId}: сводка по числам заявки {Chars} симв.",
+                _chatId,
+                numbers.Length);
 
-            var verdict = await BuildVerdictAsync(criteria, coverage, userComment, reviewed, ct);
+            await _statusHandler("Собираю итоговый разбор заявки...");
+
+            var verdict = await BuildVerdictAsync(criteria, coverage, numbers, userComment, reviewed, ct);
+
+            verdict = _citations.StripUnknown(verdict);
+            verdict = Append(verdict, VerifiedNumbers(numbers));
+            verdict = Append(verdict, _citations.BuildSources());
 
             return failedSections.Count == 0
                 ? verdict
@@ -132,6 +205,12 @@ public class ApplicationReviewAgent : IAgent
         }
         catch (OperationCanceledException)
         {
+            _logger.LogInformation(
+                "Разбор заявки {ChatId}: остановлен на {Reviewed}/{Total} фрагментов, заметки сохранены",
+                _chatId,
+                reviewedPieces,
+                pieces.Count);
+
             return "Проверка заявки прервана. Заметки, сделанные до остановки, сохранены в этом чате.";
         }
     }
@@ -149,7 +228,11 @@ public class ApplicationReviewAgent : IAgent
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[REVIEW PREFLIGHT]: авторизация в GigaChat не прошла -> {GigaChatRetry.Describe(ex)}");
+            _logger.LogError(
+                ex,
+                "Разбор заявки {ChatId}: авторизация в GigaChat не прошла -> {Failure}",
+                _chatId,
+                GigaChatRetry.Describe(ex));
             return false;
         }
     }
@@ -170,7 +253,7 @@ public class ApplicationReviewAgent : IAgent
             ct.ThrowIfCancellationRequested();
 
             var section = pieces[index];
-            _statusHandler($"Проверяю раздел {index + 1}/{pieces.Count}: {Shorten(section.Title)}");
+            await _statusHandler($"Проверяю раздел {index + 1}/{pieces.Count}: {Shorten(section.Title)}");
 
             try
             {
@@ -183,18 +266,26 @@ public class ApplicationReviewAgent : IAgent
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[REVIEW FAILED]: {section.Title} -> {GigaChatRetry.Describe(ex)}");
+                _logger.LogWarning(
+                    ex,
+                    "Разбор заявки {ChatId}: фрагмент \"{Section}\" не проверен -> {Failure}",
+                    _chatId,
+                    section.Title,
+                    GigaChatRetry.Describe(ex));
+
                 failed.Add((section, index + 1));
 
                 if (!GigaChatRetry.IsTransient(ex) || succeeded > 0) continue;
 
                 if (++transientFailures >= OutageThreshold)
                 {
-                    Console.WriteLine(
-                        $"[REVIEW ABORTED]: {OutageThreshold} обращения подряд не прошли и ни одно не удалось — " +
-                        "останавливаю проверку, сервис недоступен");
+                    _logger.LogError(
+                        "Разбор заявки {ChatId}: {Threshold} обращения подряд не прошли и ни одно не удалось — " +
+                        "останавливаю проверку, сервис недоступен",
+                        _chatId,
+                        OutageThreshold);
 
-                    _statusHandler("Сервис ИИ не отвечает — останавливаю проверку.");
+                    await _statusHandler("Сервис ИИ не отвечает — останавливаю проверку.");
 
                     return new SectionsOutcome(failed, succeeded, true);
                 }
@@ -213,8 +304,12 @@ public class ApplicationReviewAgent : IAgent
     {
         var stillFailed = new List<(ApplicationSectionDto Section, int Number)>();
 
-        _statusHandler($"Повторяю проверку {failed.Count} фрагмент(ов)...");
-        Console.WriteLine($"[REVIEW RETRY]: повторяю {failed.Count} фрагмент(ов) через {_gigaChatOptions.OperationRetryDelaySeconds:0.#} с");
+        await _statusHandler($"Повторяю проверку {failed.Count} фрагмент(ов)...");
+        _logger.LogInformation(
+            "Разбор заявки {ChatId}: повторяю {Failed} фрагмент(ов) через {Delay:0.#} с",
+            _chatId,
+            failed.Count,
+            _gigaChatOptions.OperationRetryDelaySeconds);
 
         await Task.Delay(TimeSpan.FromSeconds(_gigaChatOptions.OperationRetryDelaySeconds), ct);
 
@@ -232,7 +327,13 @@ public class ApplicationReviewAgent : IAgent
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[REVIEW RETRY FAILED]: {section.Title} -> {GigaChatRetry.Describe(ex)}");
+                _logger.LogWarning(
+                    ex,
+                    "Разбор заявки {ChatId}: повторная проверка \"{Section}\" не удалась -> {Failure}",
+                    _chatId,
+                    section.Title,
+                    GigaChatRetry.Describe(ex));
+
                 stillFailed.Add((section, number));
             }
         }
@@ -241,19 +342,31 @@ public class ApplicationReviewAgent : IAgent
     }
 
     public Task<string> InvokeAsync(string prompt, CancellationToken ct) =>
-        ReviewAsync([new ApplicationSectionDto("Документ", prompt)], userComment: null, ct);
+        ReviewAsync([new ApplicationSectionDto("Документ", prompt)], [], ContestKind.Individual, userComment: null, ct);
 
-    private static string ToCriteriaNames(string criteria)
+    private static string Append(string verdict, string block) =>
+        block.Length == 0 ? verdict : $"{verdict.TrimEnd()}\n\n---\n\n{block}";
+
+    private static string VerifiedNumbers(string numbers)
     {
-        if (criteria.Length == 0) return string.Empty;
+        const string marker = "РАСХОЖДЕНИЯ:";
 
-        var names = criteria
-            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Where(line => !line.StartsWith("ШКАЛА", StringComparison.OrdinalIgnoreCase))
-            .Select(line => line.Split('—', '-')[0].Trim().TrimStart('•', '*', '.', ' '))
-            .Where(name => name.Length > 0);
+        var start = numbers.IndexOf(marker, StringComparison.Ordinal);
+        if (start < 0) return string.Empty;
 
-        return Truncate(string.Join("; ", names), MaxCriteriaNamesChars);
+        var body = numbers[(start + marker.Length)..].Trim();
+        if (body.Length == 0) return string.Empty;
+
+        return $"## Проверено расчётом\n\nЭти расхождения посчитаны по документу, а не выведены моделью:\n\n{body}";
+    }
+
+    private static string ToCriteriaList(IReadOnlyList<ReviewCriterion> criteria)
+    {
+        if (criteria.Count == 0) return string.Empty;
+
+        var lines = criteria.Select(c => $"{c.Index}. {c.Name}");
+
+        return Truncate(string.Join("\n", lines), MaxCriteriaNamesChars);
     }
 
     private int Budget => Math.Max(_gigaChatOptions.ApplicationSectionChars, MinSectionChars);
@@ -261,14 +374,18 @@ public class ApplicationReviewAgent : IAgent
     private int SectionToolCalls =>
         Math.Max(_gigaChatOptions.ApplicationSectionToolCalls, MinToolCallsPerSection);
 
-
     private (IReadOnlyList<IChatFunctionTool> Tools, PinFunctionToolsSet Pins) BuildSectionTools()
     {
-        var manualTools = new ManualFunctionsToolsSet(_manualRepository, _manualId).FunctionTools;
+        var manualTools = new ManualFunctionsToolsSet(
+            _manualRepository,
+            _manualId,
+            _loggerFactory.CreateLogger<ManualFunctionsToolsSet>(),
+            _citations).FunctionTools;
 
         var pins = new PinFunctionToolsSet(
             _pinRepository,
             _chatId,
+            _loggerFactory.CreateLogger<PinFunctionToolsSet>(),
             _gigaChatOptions.PinDuplicateDistance,
             _gigaChatOptions.PinSearchDistance);
 
@@ -288,9 +405,14 @@ public class ApplicationReviewAgent : IAgent
         string criteriaNames,
         CancellationToken ct)
     {
-        Console.WriteLine(
-            $"[REVIEWING]: {number}/{total} {Shorten(section.Title)} ({section.Content.Length} chars, " +
-            $"сводка={_memo.Length} симв.)");
+        _logger.LogInformation(
+            "Разбор заявки {ChatId}: фрагмент {Number}/{Total} \"{Section}\" ({Chars} симв., сводка={Memo} симв.)",
+            _chatId,
+            number,
+            total,
+            Shorten(section.Title),
+            section.Content.Length,
+            _memo.Length);
 
         var journal = await ReviewSectionAsync(
             section, number, total, userComment, criteriaNames, SectionToolCalls, MemoHeadChars, ct);
@@ -317,14 +439,22 @@ public class ApplicationReviewAgent : IAgent
         }
         catch (Exception ex) when (IsToolCallLimit(ex))
         {
-            Console.WriteLine($"[REVIEW BUDGET]: {Shorten(section.Title)} -> лимит вызовов исчерпан, заметки сохранены");
+            _logger.LogWarning(
+                ex,
+                "Разбор заявки {ChatId}: \"{Section}\" -> лимит вызовов исчерпан, заметки сохранены",
+                _chatId,
+                Shorten(section.Title));
         }
         catch (RequestEntityTooLargeError)
         {
             if (maxToolCalls > MinToolCallsPerSection)
             {
                 var reduced = Math.Max(maxToolCalls / 2, MinToolCallsPerSection);
-                Console.WriteLine($"[REVIEW TOO LARGE]: {Shorten(section.Title)} -> урезаю вызовы инструментов до {reduced}");
+                _logger.LogWarning(
+                    "Разбор заявки {ChatId}: \"{Section}\" не влез -> урезаю вызовы инструментов до {Reduced}",
+                    _chatId,
+                    Shorten(section.Title),
+                    reduced);
 
                 return await ReviewSectionAsync(
                     section, number, total, userComment, criteriaNames, reduced, memoBudget, ct);
@@ -333,7 +463,11 @@ public class ApplicationReviewAgent : IAgent
             if (memoBudget > 0 && _memo.Length > 0)
             {
                 var reduced = memoBudget / 2 >= MinMemoChars ? memoBudget / 2 : 0;
-                Console.WriteLine($"[REVIEW TOO LARGE]: {Shorten(section.Title)} -> урезаю сводку до {reduced} симв.");
+                _logger.LogWarning(
+                    "Разбор заявки {ChatId}: \"{Section}\" не влез -> урезаю сводку до {Reduced} симв.",
+                    _chatId,
+                    Shorten(section.Title),
+                    reduced);
 
                 return await ReviewSectionAsync(
                     section, number, total, userComment, criteriaNames, maxToolCalls, reduced, ct);
@@ -341,7 +475,11 @@ public class ApplicationReviewAgent : IAgent
 
             if (section.Content.Length <= MinSectionChars) throw;
 
-            Console.WriteLine($"[REVIEW TOO LARGE]: {Shorten(section.Title)} ({section.Content.Length} chars) -> дроблю пополам");
+            _logger.LogWarning(
+                "Разбор заявки {ChatId}: \"{Section}\" ({Chars} симв.) не влез -> дроблю пополам",
+                _chatId,
+                Shorten(section.Title),
+                section.Content.Length);
 
             var collected = new List<PinJournalEntry>(pins.Journal);
 
@@ -385,11 +523,15 @@ public class ApplicationReviewAgent : IAgent
             Model = _gigaChatOptions.ApplicationReviewAgentModel
         };
 
-        await _gigaChatClient.ChatWithToolsAsync(
-            chat,
-            tools,
-            maxToolCalls: maxToolCalls,
-            cancellationToken: ct);
+        await _tokenMeter.MeasureToolsAsync(
+            TokenOperation.ReviewSection,
+            chat.Model,
+            () => _gigaChatClient.ChatWithToolsAsync(
+                chat,
+                tools,
+                maxToolCalls: maxToolCalls,
+                cancellationToken: ct),
+            _chatId);
     }
 
     private string MemoFor(int budget) =>
@@ -469,12 +611,16 @@ public class ApplicationReviewAgent : IAgent
                 Model = _gigaChatOptions.ApplicationReviewAgentModel
             };
 
-            var result = await SendWithRetryAsync(chat, "накопительная сводка", ct);
+            var result = await SendWithRetryAsync(chat, "накопительная сводка", TokenOperation.ReviewMemo, ct);
             var content = result.Choices.FirstOrDefault()?.Message.Content?.Trim() ?? string.Empty;
 
             if (content.Length == 0) return FitLines(SplitLines(combined), budget);
 
-            Console.WriteLine($"[MEMO]: {combined.Length} -> {content.Length} симв.");
+            _logger.LogDebug(
+                "Разбор заявки {ChatId}: сводка сжата {Before} -> {After} симв.",
+                _chatId,
+                combined.Length,
+                content.Length);
 
             return Truncate(content, budget);
         }
@@ -484,7 +630,11 @@ public class ApplicationReviewAgent : IAgent
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[MEMO FAILED]: {GigaChatRetry.Describe(ex)} -> сжимаю сводку без модели");
+            _logger.LogWarning(
+                ex,
+                "Разбор заявки {ChatId}: сжать сводку моделью не удалось ({Failure}) -> сжимаю без модели",
+                _chatId,
+                GigaChatRetry.Describe(ex));
 
             return FitLines(SplitLines(combined), budget);
         }
@@ -493,9 +643,12 @@ public class ApplicationReviewAgent : IAgent
     private static List<string> SplitLines(string text) =>
         text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
 
+    public ApplicationReviewResult? LastReview { get; private set; }
+
     private async Task<string> BuildVerdictAsync(
-        string criteria,
+        IReadOnlyList<ReviewCriterion> criteria,
         string coverage,
+        string numbers,
         string? userComment,
         int reviewed,
         CancellationToken ct)
@@ -505,15 +658,33 @@ public class ApplicationReviewAgent : IAgent
         var pins = (await _pinRepository.GetPinsAsync(_chatId)).ToList();
         var findings = pins.Where(pin => VerdictPinOrder.Contains(pin.Type)).ToList();
 
-        if (findings.Count == 0 && criteria.Length == 0)
+        if (criteria.Count == 0)
         {
-            return "## Итог\n\nПо методичке замечаний к заявке не найдено. " +
-                   "Проверьте её глазами перед подачей — автоматическая проверка не заменяет эксперта.";
+            return findings.Count == 0 && numbers.Length == 0
+                ? "## Итог\n\nПо методичке замечаний к заявке не найдено. " +
+                  "Проверьте её глазами перед подачей — автоматическая проверка не заменяет эксперта."
+                : "## Итог\n\nКритерии оценки в методичке не нашлись, поэтому оценки по критериям нет. " +
+                  "Ниже замечания, найденные при проверке.\n\n" +
+                  BuildPinsDigest(findings, FallbackDigestChars);
         }
+
+        var review = ReviewConsolidator.Consolidate(criteria, findings, numbers, coverage);
+        LastReview = review;
+
+        _logger.LogInformation(
+            "Разбор заявки {ChatId}: итог — критериев={Criteria}, находок={Findings}, " +
+            "расхождений={Discrepancies}, балл={Score}/{MaxScore}",
+            _chatId,
+            review.Criteria.Count,
+            findings.Count,
+            review.ComputedDiscrepancies.Count,
+            review.TotalScore,
+            review.MaxScore);
 
         try
         {
-            return await SendVerdictAsync(findings, criteria, coverage, userComment, Budget, ct);
+            var narration = await SendNarrationAsync(review, userComment, ct);
+            ReviewNarration.Apply(review, narration);
         }
         catch (OperationCanceledException)
         {
@@ -521,20 +692,41 @@ public class ApplicationReviewAgent : IAgent
         }
         catch (Exception ex)
         {
-
-            Console.WriteLine($"[VERDICT FAILED]: {GigaChatRetry.Describe(ex)} -> отдаю заметки без итогового разбора");
-
-            return "## Итог\n\nСобрать итоговый разбор не удалось — сервис ИИ не ответил. " +
-                   "Ниже замечания, найденные при проверке; они также сохранены в этом чате, " +
-                   "их можно обсудить обычным сообщением.\n\n" +
-                   BuildPinsDigest(findings, FallbackDigestChars);
+            _logger.LogWarning(
+                ex,
+                "Разбор заявки {ChatId}: пояснения к оценке не собрались ({Failure}) -> отдаю оценку без них",
+                _chatId,
+                GigaChatRetry.Describe(ex));
         }
+
+        return ReviewRenderer.ToMarkdown(review);
+    }
+
+    private async Task<string> SendNarrationAsync(
+        ApplicationReviewResult review,
+        string? userComment,
+        CancellationToken ct)
+    {
+        var chat = new Chat
+        {
+            Messages =
+            [
+                Messages.System(ReviewNarration.SystemPrompt),
+                Messages.User(ReviewNarration.BuildUserMessage(review, userComment))
+            ],
+            Model = _gigaChatOptions.ApplicationReviewAgentModel
+        };
+
+        var result = await SendWithRetryAsync(chat, "пояснения к оценке", TokenOperation.ReviewNarration, ct);
+
+        return result.Choices.FirstOrDefault()?.Message.Content?.Trim() ?? string.Empty;
     }
 
     private async Task<string> SendVerdictAsync(
         IReadOnlyList<Pin> findings,
         string criteria,
         string coverage,
+        string numbers,
         string? userComment,
         int digestBudget,
         CancellationToken ct)
@@ -550,7 +742,7 @@ public class ApplicationReviewAgent : IAgent
         {
             Messages =
             [
-                Messages.System(VerdictSystemPrompt(criteria, coverage, userComment)),
+                Messages.System(VerdictSystemPrompt(criteria, coverage, numbers, userComment)),
                 Messages.User(payload)
             ],
             Model = _gigaChatOptions.ApplicationReviewAgentModel
@@ -558,12 +750,19 @@ public class ApplicationReviewAgent : IAgent
 
         try
         {
-            var result = await SendWithRetryAsync(chat, "итоговый разбор", ct);
+            var result = await SendWithRetryAsync(chat, "итоговый разбор", TokenOperation.ReviewNarration, ct);
 
-            Console.WriteLine(
-                $"[VERDICT]: model={result.Model}, prompt_tokens={result.Usage?.PromptTokens}, " +
-                $"заметок={findings.Count}, критерии={criteria.Length} симв., дайджест={digest.Length} симв., " +
-                $"сводка={memo.Length} симв.");
+            _logger.LogInformation(
+                "Разбор заявки {ChatId}: разбор собран, model={Model}, prompt_tokens={PromptTokens}, " +
+                "заметок={Findings}, критерии={CriteriaChars} симв., дайджест={DigestChars} симв., " +
+                "сводка={MemoChars} симв.",
+                _chatId,
+                result.Model,
+                result.Usage?.PromptTokens,
+                findings.Count,
+                criteria.Length,
+                digest.Length,
+                memo.Length);
 
             var content = result.Choices.FirstOrDefault()?.Message.Content;
 
@@ -574,15 +773,20 @@ public class ApplicationReviewAgent : IAgent
             if (digestBudget > MinSectionChars)
             {
                 var reduced = Math.Max(digestBudget / 2, MinSectionChars);
-                Console.WriteLine($"[VERDICT TOO LARGE]: урезаю дайджест заметок до {reduced} симв.");
+                _logger.LogWarning(
+                    "Разбор заявки {ChatId}: разбор не влез -> урезаю дайджест заметок до {Reduced} симв.",
+                    _chatId,
+                    reduced);
 
-                return await SendVerdictAsync(findings, criteria, coverage, userComment, reduced, ct);
+                return await SendVerdictAsync(findings, criteria, coverage, numbers, userComment, reduced, ct);
             }
 
             if (criteria.Length > 0)
             {
-                Console.WriteLine("[VERDICT TOO LARGE]: собираю разбор без блока критериев.");
-                return await SendVerdictAsync(findings, string.Empty, string.Empty, userComment, Budget, ct);
+                _logger.LogWarning(
+                    "Разбор заявки {ChatId}: разбор не влез -> собираю его без блока критериев",
+                    _chatId);
+                return await SendVerdictAsync(findings, string.Empty, string.Empty, numbers, userComment, Budget, ct);
             }
 
             throw;
@@ -591,60 +795,139 @@ public class ApplicationReviewAgent : IAgent
 
     private async Task<string> CheckCoverageAsync(
         IReadOnlyList<ApplicationSectionDto> sections,
-        string criteria,
+        IReadOnlyList<ReviewCriterion> criteria,
+        string criteriaText,
         CancellationToken ct)
     {
-        if (criteria.Length == 0) return string.Empty;
+        if (criteriaText.Length == 0 || criteria.Count == 0) return string.Empty;
+
+        var titles = OutlineTitles(sections);
+        if (titles.Count == 0) return string.Empty;
+
+        var evidence = await BuildEvidenceAsync();
+        var batches = ChunkLines(titles, CoverageOutlineChars);
+
+        HashSet<int>? missing = null;
 
         try
         {
-            var outline = await BuildOutlineAsync(sections);
-            if (outline.Length == 0) return string.Empty;
-
-            var chat = new Chat
+            foreach (var batch in batches)
             {
-                Messages =
-                [
-                    Messages.System(CoveragePrompt),
-                    Messages.User($"КРИТЕРИИ:\n{criteria}\n\nРАЗДЕЛЫ ЗАЯВКИ:\n{outline}")
-                ],
-                Model = _gigaChatOptions.ApplicationReviewAgentModel
-            };
+                ct.ThrowIfCancellationRequested();
 
-            var result = await SendWithRetryAsync(chat, "сверка с критериями", ct);
-            var content = result.Choices.FirstOrDefault()?.Message.Content?.Trim() ?? string.Empty;
+                var answer = await AskCoverageAsync(criteriaText, batch, evidence, ct);
+                var reported = ReviewConsolidator.MatchCoverage(answer, criteria);
 
-            Console.WriteLine($"[COVERAGE]: оглавление={outline.Length} симв., ответ={content.Length} симв.");
+                if (missing is null) missing = reported;
+                else missing.IntersectWith(reported);
 
-            return content.StartsWith("НЕТ", StringComparison.OrdinalIgnoreCase) ? string.Empty : content;
+                if (missing.Count == 0) break;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[COVERAGE FAILED]: {ex.Message}");
+            _logger.LogWarning(
+                ex,
+                "Разбор заявки {ChatId}: сверка с критериями не удалась ({Failure}) -> считаю все критерии покрытыми",
+                _chatId,
+                GigaChatRetry.Describe(ex));
             return string.Empty;
         }
+
+        var confirmed = criteria.Where(criterion => missing?.Contains(criterion.Index) == true).ToList();
+
+        _logger.LogInformation(
+            "Разбор заявки {ChatId}: сверка с критериями — заголовков={Titles}, запросов={Batches}, " +
+            "выжимка={EvidenceChars} симв., пропущено критериев={Missing}",
+            _chatId,
+            titles.Count,
+            batches.Count,
+            evidence.Length,
+            confirmed.Count);
+
+        return confirmed.Count == 0
+            ? string.Empty
+            : string.Join("\n", confirmed.Select(criterion => $"{criterion.Name} — подходящего раздела в заявке нет."));
     }
 
-    private async Task<string> BuildOutlineAsync(IReadOnlyList<ApplicationSectionDto> sections)
+    private async Task<string> AskCoverageAsync(
+        string criteria,
+        IReadOnlyList<string> titles,
+        string evidence,
+        CancellationToken ct)
     {
-        var titles = sections
+        var outline = string.Join("\n", titles);
+
+        var payload = evidence.Length == 0
+            ? $"КРИТЕРИИ:\n{criteria}\n\nРАЗДЕЛЫ ЗАЯВКИ:\n{outline}"
+            : $"КРИТЕРИИ:\n{criteria}\n\nРАЗДЕЛЫ ЗАЯВКИ:\n{outline}\n\nЧТО РЕАЛЬНО ПРОЧИТАНО В ЗАЯВКЕ:\n{evidence}";
+
+        var chat = new Chat
+        {
+            Messages =
+            [
+                Messages.System(CoveragePrompt),
+                Messages.User(payload)
+            ],
+            Model = _gigaChatOptions.ApplicationReviewAgentModel
+        };
+
+        var result = await SendWithRetryAsync(chat, "сверка с критериями", TokenOperation.ReviewCoverage, ct);
+        var content = result.Choices.FirstOrDefault()?.Message.Content?.Trim() ?? string.Empty;
+
+        return content.StartsWith("НЕТ", StringComparison.OrdinalIgnoreCase) ? string.Empty : content;
+    }
+
+    private static List<string> OutlineTitles(IReadOnlyList<ApplicationSectionDto> sections) =>
+        sections
             .Select(section => section.Title)
             .Where(title => title.Length > 0)
             .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Select(title => $"- {Shorten(title)}")
+            .Select(OutlineLine)
             .ToList();
 
-        var outline = FitLines(titles, Budget);
+    private static string OutlineLine(string title) =>
+        title.Length <= OutlineTitleChars
+            ? $"- {title}"
+            : $"- ...{title[^OutlineTitleChars..]}";
 
+    private async Task<string> BuildEvidenceAsync()
+    {
         var evidence = _memo.Length > 0
             ? SplitLines(_memo)
             : (await _pinRepository.GetPinsAsync(_chatId, PinType.Summary))
                 .Select(pin => $"- {Truncate(pin.Content, MaxPinContentChars)}")
                 .ToList();
 
-        if (evidence.Count == 0) return outline;
+        return evidence.Count == 0 ? string.Empty : FitLines(evidence, MemoBudget);
+    }
 
-        return outline + "\n\nЧТО РЕАЛЬНО ПРОЧИТАНО В ЗАЯВКЕ:\n" + FitLines(evidence, Budget);
+    private static List<List<string>> ChunkLines(IReadOnlyList<string> lines, int budget)
+    {
+        var chunks = new List<List<string>>();
+        var current = new List<string>();
+        var used = 0;
+
+        foreach (var line in lines)
+        {
+            if (current.Count > 0 && used + line.Length + 1 > budget)
+            {
+                chunks.Add(current);
+                current = [];
+                used = 0;
+            }
+
+            current.Add(line);
+            used += line.Length + 1;
+        }
+
+        if (current.Count > 0) chunks.Add(current);
+
+        return chunks;
     }
 
     private static string FitLines(IReadOnlyList<string> lines, int budget)
@@ -672,46 +955,105 @@ public class ApplicationReviewAgent : IAgent
         return string.Join("\n", sampled);
     }
 
-    private async Task<string> ExtractCriteriaAsync(CancellationToken ct)
+    private async Task<string> ExtractCriteriaAsync(ContestKind kind, CancellationToken ct)
     {
         try
         {
-            var parts = await _manualRepository.KnnSearchManualPartAsync(CriteriaQuery, CriteriaSearchLimit, _manualId);
+            var parts = (await _manualRepository.KnnSearchManualPartAsync(
+                CriteriaQueryFor(kind), CriteriaSearchLimit, _manualId)).ToList();
 
             var source = string.Join("\n\n", parts.Select(part => $"{part.Title}\n{part.Content}"));
             if (string.IsNullOrWhiteSpace(source)) return string.Empty;
 
-            var chat = new Chat
+            var content = await SendCriteriaAsync(source, CriteriaSourceChars, kind, ct);
+
+            _logger.LogInformation(
+                "Разбор заявки {ChatId}: критерии подняты — частей методички={Parts}, " +
+                "источник={SourceChars} симв., ответ={ContentChars} симв.",
+                _chatId,
+                parts.Count,
+                source.Length,
+                content.Length);
+
+            foreach (var part in parts)
             {
-                Messages =
-                [
-                    Messages.System(CriteriaExtractionPrompt),
-                    Messages.User(Truncate(source, Budget))
-                ],
-                Model = _gigaChatOptions.ApplicationReviewAgentModel
-            };
+                _logger.LogDebug(
+                    "Разбор заявки {ChatId}: критерии из части методички \"{Part}\"",
+                    _chatId,
+                    Shorten(part.Title));
+            }
 
-            var result = await SendWithRetryAsync(chat, "критерии оценки", ct);
-            var content = result.Choices.FirstOrDefault()?.Message.Content?.Trim() ?? string.Empty;
+            if (content.Length == 0 || content.StartsWith("НЕТ", StringComparison.OrdinalIgnoreCase))
+            {
+                await _statusHandler("Критерии оценки в методичке не нашлись — разбор будет без оценки по критериям.");
+                return string.Empty;
+            }
 
-            Console.WriteLine($"[CRITERIA]: частей методички={parts.Count()}, ответ={content.Length} симв.");
-
-            return content.StartsWith("НЕТ", StringComparison.OrdinalIgnoreCase) ? string.Empty : content;
+            return content;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[CRITERIA FAILED]: {ex.Message}");
+            _logger.LogWarning(
+                ex,
+                "Разбор заявки {ChatId}: поднять критерии оценки не удалось -> {Failure}",
+                _chatId,
+                GigaChatRetry.Describe(ex));
+            await _statusHandler("Критерии оценки поднять не удалось — разбор будет без оценки по критериям.");
             return string.Empty;
         }
     }
+
+    private async Task<string> SendCriteriaAsync(string source, int budget, ContestKind kind, CancellationToken ct)
+    {
+        var chat = new Chat
+        {
+            Messages =
+            [
+                Messages.System(CriteriaExtractionPrompt(kind)),
+                Messages.User(Truncate(source, budget))
+            ],
+            Model = _gigaChatOptions.ApplicationReviewAgentModel
+        };
+
+        try
+        {
+            var result = await SendWithRetryAsync(chat, "критерии оценки", TokenOperation.ReviewCriteria, ct);
+            return result.Choices.FirstOrDefault()?.Message.Content?.Trim() ?? string.Empty;
+        }
+        catch (RequestEntityTooLargeError)
+        {
+            if (budget <= MinCriteriaSourceChars) throw;
+
+            var reduced = Math.Max(budget / 2, MinCriteriaSourceChars);
+            _logger.LogWarning(
+                "Разбор заявки {ChatId}: источник критериев не влез -> урезаю до {Reduced} симв.",
+                _chatId,
+                reduced);
+
+            return await SendCriteriaAsync(source, reduced, kind, ct);
+        }
+    }
     
-    private Task<ChatCompletion> SendWithRetryAsync(Chat chat, string operation, CancellationToken ct) =>
-        GigaChatRetry.ExecuteAsync(
-            token => _gigaChatClient.ChatAsync(chat, token),
-            operation,
-            _gigaChatOptions.MaxOperationAttempts,
-            _gigaChatOptions.OperationRetryDelaySeconds,
-            ct);
+    private Task<ChatCompletion> SendWithRetryAsync(
+        Chat chat,
+        string operation,
+        TokenOperation metered,
+        CancellationToken ct) =>
+        _tokenMeter.MeasureChatAsync(
+            metered,
+            chat.Model,
+            () => GigaChatRetry.ExecuteAsync(
+                token => _gigaChatClient.ChatAsync(chat, token),
+                operation,
+                _gigaChatOptions.MaxOperationAttempts,
+                _gigaChatOptions.OperationRetryDelaySeconds,
+                _logger,
+                ct),
+            _chatId);
 
     private static List<Pin> Distinct(IReadOnlyList<Pin> pins)
     {
@@ -856,11 +1198,28 @@ public class ApplicationReviewAgent : IAgent
 Ты проверяешь один фрагмент заявки на грант по методичке. Ответ пользователю не пишешь — только
 складываешь находки в заметки, разбор соберут отдельным шагом.
 {CriteriaNamesBlock(criteriaNames)}{MemoBlock(memo)}
+Ты не редактор и не доброжелательный читатель. Ты эксперт конкурса, и твоя работа — понять,
+чем этот фрагмент подтверждает соответствие требованиям, а не поверить ему на слово.
+
 Как работать:
 1. search_in_manual — требования методички к этому фрагменту, хватает одного-двух запросов.
-2. create_pin — записать находку. Ответ Duplicate значит, что наблюдение уже есть, его пропускай.
-3. Ровно одна заметка Summary на фрагмент — о чём он.
-4. Записал существенное — заканчивай. Пустой ход лучше лишней заметки.
+2. Сверь фрагмент с поднятым требованием: сказано ли КОНКРЕТНО, чем оно выполняется.
+3. create_pin — записать находку. Ответ Duplicate значит, что наблюдение уже есть, его пропускай.
+4. Ровно одна заметка Summary на фрагмент — о чём он.
+
+Заявленное — не то же самое, что подтверждённое. Если фрагмент утверждает нужное, но не показывает,
+чем это обеспечено, это находка категории Attention, а не повод промолчать. Типичные поводы:
+
+- обещание результата без числа, методики подсчёта или срока;
+- «повысим», «улучшим», «сформируем» без указания, из чего это следует;
+- мероприятие без места, даты, аудитории или ответственного;
+- статья расходов без расчёта: почему столько, из чего сложилось;
+- опыт команды без конкретики: что именно делал этот человек и в каком проекте;
+- ссылка на партнёра, охват или публикацию без подтверждения.
+
+Промолчать можно, только когда фрагмент действительно показывает выполнение требования: есть цифры,
+сроки, механизм или прямая ссылка на подтверждение. Тогда заметка не нужна — молчание означает
+«проверил и подтвердил», а не «не стал смотреть».
 
 search_pins — поднять свои прежние заметки, если фрагмент ссылается на то, чего ты не видел.
 update_pin и delete_pin — поправить или убрать прежнюю заметку, но только если этот фрагмент её
@@ -873,7 +1232,13 @@ update_pin и delete_pin — поправить или убрать прежню
 Теги вида [GIVEN_NAME_0001] — вырезанные персональные данные. Поле с тегом считается заполненным,
 претензии к нему запрещены: это ограничение проверки, а не недостаток заявки.
 
-Требования бери только из методички. Отсутствие замечаний — нормальный результат.
+Требования бери только из методички. Мягкость — такая же ошибка, как придирка: заявку по твоим
+заметкам будут оценивать в баллах, и критерий без единой заметки получит полный балл автоматически.
+Поэтому «вроде нормально» — недостаточное основание промолчать.
+
+search_in_manual возвращает у каждого фрагмента поле ref — метку вида М3. Если заметка опирается
+на требование из фрагмента, поставь его метку в конце текста заметки: [М3]. Меток может быть
+несколько. Метки, которых не было в выдаче поиска, ставить нельзя — они будут удалены.
 {UserCommentBlock(userComment)}
 """;
 
@@ -893,18 +1258,30 @@ update_pin и delete_pin — поправить или убрать прежню
 - Уложись в {budget} символов.
 """;
 
-    private const string CriteriaExtractionPrompt = """
-Тебе даны фрагменты методички по грантам. Выпиши из них критерии, по которым оценивается заявка.
+    private static string CriteriaExtractionPrompt(ContestKind kind) => $"""
+Тебе даны фрагменты методички по грантам. Выпиши критерии, по которым оценивается заявка.
 
-Формат ответа — по одной строке на критерий:
-Название критерия — что именно оценивается (одна короткая фраза).
+Проверяемая заявка подана на: {ContestName(kind)}.
+
+Формат ответа — строго по одной строке на критерий, три поля через вертикальную черту:
+номер|Название критерия|максимальный балл
+
+Пример правильного ответа:
+1|Актуальность и социальная значимость|10
+2|Реализуемость и результативность|10
 
 Правила:
-- Не больше 10 критериев, только те, что действительно есть в тексте.
-- Если в тексте указана шкала оценки (баллы, диапазоны, вес критерия), добавь последней строкой:
-  ШКАЛА: <как оценивают>.
-- Ничего не добавляй от себя и не пересказывай требования к оформлению.
-- Если критериев оценки в тексте нет — ответь одним словом: НЕТ.
+- Никакого текста до, после и между строками. Ни заголовков, ни пояснений, ни markdown.
+- Нумеруй подряд с единицы.
+- Максимальный балл бери из шкалы в методичке. Если шкала не указана — ставь 10.
+- Бери критерии ТОЛЬКО того конкурса, который назван выше. В методичке наборы критериев для
+  разных конкурсов идут рядом и различаются; чужой набор пропусти целиком.
+- Критерий — это название, под которым в методичке идёт разбор. Строки из перечня
+  «эксперт анализирует» — это подпункты внутри критерия, а не отдельные критерии.
+  Выписывать их запрещено.
+- Названия критериев переноси дословно, как в методичке, не переформулируя.
+- Если один и тот же критерий встречается дважды, оставь одну строку.
+- Если критериев для названного конкурса в тексте нет — ответь одним словом: НЕТ.
 """;
 
     private const string CoveragePrompt = """
@@ -927,13 +1304,13 @@ update_pin и delete_pin — поправить или убрать прежню
 - Если все критерии чем-то покрыты — ответь одним словом: НЕТ.
 """;
 
-    private static string VerdictSystemPrompt(string criteria, string coverage, string? userComment) => $"""
+    private static string VerdictSystemPrompt(string criteria, string coverage, string numbers, string? userComment) => $"""
 Ты — эксперт, проверивший заявку на грант по методичке. В сообщении пользователя два блока:
 ЧТО ПРОЧИТАНО В ЗАЯВКЕ — сводка того, что в заявке было, она собиралась по мере чтения и показывает,
 какие разделы в заявке есть; ниже — замечания, зафиксированные при проверке. Разбор строй по
 замечаниям, а сводку используй как доказательство наличия разделов: если раздел упомянут в сводке,
 писать, что его нет, нельзя. Собери итоговый разбор в Markdown.
-{CriteriaBlock(criteria)}{CoverageBlock(coverage)}
+{CriteriaBlock(criteria)}{CoverageBlock(coverage)}{NumbersBlock(numbers)}
 Структура разбора:
 {(criteria.Length > 0
     ? """
@@ -974,9 +1351,12 @@ update_pin и delete_pin — поправить или убрать прежню
             ? string.Empty
             : $"""
 
-               Заявку в итоге оценят по критериям: {criteriaNames}
-               Если фрагмент относится к какому-то из них, назови этот критерий в начале заметки
-               обычным текстом, без скобок.
+               КРИТЕРИИ, по которым заявку оценят:
+               {criteriaNames}
+
+               У каждой заметки обязательно указывай номер критерия из этого списка в параметре
+               criterion. Если находка не ложится ни на один критерий — ставь 0. Номер критерия
+               в текст заметки не дублируй.
 
                """;
 
@@ -988,6 +1368,25 @@ update_pin и delete_pin — поправить или убрать прежню
                ПРОЧИТАНО РАНЬШЕ (хвост сводки; полная версия уйдёт в итоговый разбор):
                {memo}
                Сводка ведётся автоматически и не правится: удаление заметки её не стирает.
+
+               """;
+
+    private static string NumbersBlock(string numbers) =>
+        numbers.Length == 0
+            ? string.Empty
+            : $"""
+
+               ЧИСЛА ЗАЯВКИ (посчитаны по всему документу, не моделью — этим данным доверяй):
+               {numbers}
+
+               Блок РАСХОЖДЕНИЯ, если он есть, — это подтверждённые противоречия внутри заявки.
+               Каждое из них вынеси в «Критические ошибки», перенеся строку ДОСЛОВНО: все числа
+               до единой цифры, без пересказа своими словами и без округления. Своих расхождений
+               не добавляй — в этом блоке перечислены все.
+               Доли категорий сметы разбери по критерию про бюджет: назови долю в процентах
+               и скажи, оправдана ли она заявленными результатами.
+               Сверь цены позиций между собой: если услуга по обработке предмета стоит дороже
+               самого предмета, скажи об этом с обеими цифрами.
 
                """;
 

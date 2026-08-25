@@ -1,8 +1,10 @@
 using System.Runtime.InteropServices;
+using ChatNode.Infrastructure.AI.Services;
 using ChatNode.Infrastructure.AI.Services.Abstractions;
 using ChatNode.Infrastructure.Configuration.Options;
 using Domain.Entities;
 using Domain.Repositories;
+using Domain.ValueTypes;
 using Microsoft.Extensions.Options;
 using StackExchange.Redis;
 
@@ -11,17 +13,60 @@ namespace ChatNode.Infrastructure;
 public class PinRepository(
     IDatabase database,
     IEmbeddingClient embeddingClient,
-    IOptions<ExpirationPolicyOption> exOptions) : IPinRepository
+    IOptions<ExpirationPolicyOption> exOptions,
+    ILogger<PinRepository> logger) : IPinRepository
 {
     private const string IndexName = "idx:pins";
     private const int MaxEmbeddedChars = 2000;
+    private const int DeleteBatchSize = 50;
 
     private readonly ExpirationPolicyOption _exOptions = exOptions.Value;
 
     private static string PinKey(Guid sessionId, Guid pinId) => $"pin:{sessionId}:{pinId}";
     private static string SessionPinsKey(Guid sessionId) => $"pins:{sessionId}";
 
-    public async Task<Guid> CreatePinAsync(Pin pin)
+    private async Task<T> DegradeAsync<T>(Func<Task<T>> action, T fallback, string operation)
+    {
+        try
+        {
+            return await action();
+        }
+        catch (Exception ex) when (
+            ex is RedisTimeoutException or RedisConnectionException or IOException or TaskCanceledException)
+        {
+            logger.LogWarning(ex, "Заметки: операция {Operation} деградировала до значения по умолчанию", operation);
+            return fallback;
+        }
+    }
+
+    public Task<Guid> CreatePinAsync(Pin pin) =>
+        DegradeAsync(() => CreatePinCoreAsync(pin), Guid.Empty, "CreatePin");
+
+    public Task<Pin?> GetPinAsync(Guid sessionId, Guid pinId) =>
+        DegradeAsync(() => GetPinCoreAsync(sessionId, pinId), null, "GetPin");
+
+    public Task<bool> UpdatePinAsync(Pin pin) =>
+        DegradeAsync(() => UpdatePinCoreAsync(pin), false, "UpdatePin");
+
+    public Task<bool> DeletePinAsync(Guid sessionId, Guid pinId) =>
+        DegradeAsync(() => DeletePinCoreAsync(sessionId, pinId), false, "DeletePin");
+
+    public Task<int> DeletePinsAsync(Guid sessionId) =>
+        DegradeAsync(() => DeletePinsCoreAsync(sessionId), 0, "DeletePins");
+
+    public Task<IEnumerable<Pin>> GetPinsAsync(Guid sessionId, PinType? type = null) =>
+        DegradeAsync(() => GetPinsCoreAsync(sessionId, type), [], "GetPins");
+
+    public Task<IEnumerable<PinMatch>> KnnSearchPinsAsync(
+        Guid sessionId,
+        string query,
+        int limit,
+        PinType? type = null,
+        double maxDistance = 2.0) =>
+        DegradeAsync(
+            () => KnnSearchPinsCoreAsync(sessionId, query, limit, type, maxDistance), [], "KnnSearchPins");
+
+    private async Task<Guid> CreatePinCoreAsync(Pin pin)
     {
         var pinId = pin.Id == Guid.Empty ? Guid.NewGuid() : pin.Id;
         var createdAt = pin.CreatedAt == default ? DateTimeOffset.UtcNow : pin.CreatedAt;
@@ -38,6 +83,8 @@ public class PinRepository(
             new HashEntry("content", pin.Content),
             new HashEntry("type", pin.Type.ToString()),
             new HashEntry("createdAt", createdAt.ToUnixTimeMilliseconds()),
+            new HashEntry("criterion", pin.CriterionIndex?.ToString() ?? string.Empty),
+            new HashEntry("scope", pin.Scope.ToString()),
             new HashEntry("embedding", embedding)
         ]);
         _ = transaction.SortedSetAddAsync(sessionPinsKey, pinId.ToString(), createdAt.ToUnixTimeMilliseconds());
@@ -50,7 +97,7 @@ public class PinRepository(
         return pinId;
     }
 
-    public async Task<Pin?> GetPinAsync(Guid sessionId, Guid pinId)
+    private async Task<Pin?> GetPinCoreAsync(Guid sessionId, Guid pinId)
     {
         var fields = await database.HashGetAllAsync(PinKey(sessionId, pinId));
         if (fields.Length == 0) return null;
@@ -60,7 +107,7 @@ public class PinRepository(
         return MapToPin(fields);
     }
 
-    public async Task<bool> UpdatePinAsync(Pin pin)
+    private async Task<bool> UpdatePinCoreAsync(Pin pin)
     {
         var pinKey = PinKey(pin.SessionId, pin.Id);
         if (!await database.KeyExistsAsync(pinKey)) return false;
@@ -70,6 +117,8 @@ public class PinRepository(
         await database.HashSetAsync(pinKey, [
             new HashEntry("content", pin.Content),
             new HashEntry("type", pin.Type.ToString()),
+            new HashEntry("criterion", pin.CriterionIndex?.ToString() ?? string.Empty),
+            new HashEntry("scope", pin.Scope.ToString()),
             new HashEntry("embedding", embedding)
         ]);
 
@@ -77,7 +126,7 @@ public class PinRepository(
         return true;
     }
 
-    public async Task<bool> DeletePinAsync(Guid sessionId, Guid pinId)
+    private async Task<bool> DeletePinCoreAsync(Guid sessionId, Guid pinId)
     {
         var transaction = database.CreateTransaction();
         var deleteTask = transaction.KeyDeleteAsync(PinKey(sessionId, pinId));
@@ -87,7 +136,28 @@ public class PinRepository(
         return await deleteTask;
     }
 
-    public async Task<IEnumerable<Pin>> GetPinsAsync(Guid sessionId, PinType? type = null)
+    private async Task<int> DeletePinsCoreAsync(Guid sessionId)
+    {
+        var ids = await database.SortedSetRangeByScoreAsync(SessionPinsKey(sessionId));
+        if (ids.Length == 0) return 0;
+
+        var keys = ids
+            .Select(raw => Guid.TryParse(raw.ToString(), out var pinId) ? PinKey(sessionId, pinId) : null)
+            .Where(key => key is not null)
+            .Select(key => (RedisKey)key!)
+            .ToArray();
+
+        foreach (var batch in keys.Chunk(DeleteBatchSize))
+        {
+            await database.KeyDeleteAsync(batch);
+        }
+
+        await database.KeyDeleteAsync(SessionPinsKey(sessionId));
+
+        return keys.Length;
+    }
+
+    private async Task<IEnumerable<Pin>> GetPinsCoreAsync(Guid sessionId, PinType? type)
     {
         var ids = await database.SortedSetRangeByScoreAsync(SessionPinsKey(sessionId), order: Order.Ascending);
         if (ids.Length == 0) return [];
@@ -113,38 +183,48 @@ public class PinRepository(
         return pins;
     }
 
-    public async Task<IEnumerable<PinMatch>> KnnSearchPinsAsync(
+    private async Task<IEnumerable<PinMatch>> KnnSearchPinsCoreAsync(
         Guid sessionId,
         string query,
         int limit,
-        PinType? type = null,
-        double maxDistance = 2.0)
+        PinType? type,
+        double maxDistance)
     {
         if (string.IsNullOrWhiteSpace(query) || limit <= 0) return [];
 
-        var vectorBytes = await EmbedAsync(query);
+        var ids = await database.SortedSetRangeByScoreAsync(SessionPinsKey(sessionId), order: Order.Ascending);
+        if (ids.Length == 0) return [];
 
-        var filter = type is null
-            ? $"@sessionId:{{{EscapeTag(sessionId.ToString())}}}"
-            : $"@sessionId:{{{EscapeTag(sessionId.ToString())}}} @type:{{{type}}}";
+        var queryVector = EmbeddingVector.FromBytes(await EmbedAsync(query));
 
-        try
+        var matches = new List<PinMatch>(ids.Length);
+        var alivePinIds = new List<Guid>(ids.Length);
+
+        foreach (var idRaw in ids)
         {
-            var results = await database.ExecuteAsync("FT.SEARCH", IndexName,
-                $"({filter})=>[KNN {limit} @embedding $vec AS score]",
-                "PARAMS", "2", "vec", vectorBytes,
-                "DIALECT", "2");
+            if (!Guid.TryParse(idRaw.ToString(), out var pinId)) continue;
 
-            return ParseSearchResponse(results)
-                .Where(match => match.Distance <= maxDistance)
-                .OrderBy(match => match.Distance)
-                .ToList();
+            var fields = await database.HashGetAllAsync(PinKey(sessionId, pinId));
+            if (fields.Length == 0) continue;
+
+            alivePinIds.Add(pinId);
+
+            var pin = MapToPin(fields);
+            if (type is not null && pin.Type != type) continue;
+
+            var stored = fields.FirstOrDefault(field => field.Name == "embedding").Value;
+            if (stored.IsNull) continue;
+
+            var distance = EmbeddingVector.CosineDistance(queryVector, EmbeddingVector.FromBytes((byte[])stored!));
+            if (distance <= maxDistance) matches.Add(new PinMatch(pin, distance));
         }
-        catch (RedisServerException ex)
-        {
-            Console.WriteLine($"[PIN KNN FAILED]: {ex.Message}");
-            return [];
-        }
+
+        await SustainAsync(sessionId, alivePinIds);
+
+        return matches
+            .OrderBy(match => match.Distance)
+            .Take(limit)
+            .ToList();
     }
 
     private async Task<byte[]> EmbedAsync(string text)
@@ -155,27 +235,20 @@ public class PinRepository(
         return VectorToBytes(embedding);
     }
 
-    private static byte[] VectorToBytes(IReadOnlyList<double> vector)
-    {
-        var floatArray = vector.Select(x => (float)x).ToArray();
-        return MemoryMarshal.AsBytes(floatArray.AsSpan()).ToArray();
-    }
+    private static byte[] VectorToBytes(IReadOnlyList<double> vector) => EmbeddingVector.ToBytes(vector);
 
     private static string EscapeTag(string value) => value.Replace("-", "\\-");
 
-    private Task SustainAsync(Guid sessionId, IReadOnlyCollection<Guid> pinIds)
+    private async Task SustainAsync(Guid sessionId, IReadOnlyCollection<Guid> pinIds)
     {
         var ttl = TimeSpan.FromSeconds(_exOptions.PinExpirationSeconds);
 
-        var batch = database.CreateBatch();
-        _ = batch.KeyExpireAsync(SessionPinsKey(sessionId), ttl);
+        await database.KeyExpireAsync(SessionPinsKey(sessionId), ttl);
+
         foreach (var pinId in pinIds)
         {
-            _ = batch.KeyExpireAsync(PinKey(sessionId, pinId), ttl);
+            await database.KeyExpireAsync(PinKey(sessionId, pinId), ttl);
         }
-
-        batch.Execute();
-        return Task.CompletedTask;
     }
 
     private static IEnumerable<PinMatch> ParseSearchResponse(RedisResult result)
@@ -222,11 +295,19 @@ public class PinRepository(
             ? DateTimeOffset.FromUnixTimeMilliseconds(unixMs)
             : DateTimeOffset.UtcNow;
 
+        var criterion = int.TryParse(dict.GetValueOrDefault("criterion"), out var index) && index > 0
+            ? index
+            : (int?)null;
+
+        Enum.TryParse<FindingScope>(dict.GetValueOrDefault("scope"), ignoreCase: true, out var scope);
+
         return new Pin(
             Guid.Parse(dict["pinId"]),
             Guid.Parse(dict["sessionId"]),
             dict.GetValueOrDefault("content", string.Empty),
             type,
-            createdAt);
+            createdAt,
+            criterion,
+            scope);
     }
 }

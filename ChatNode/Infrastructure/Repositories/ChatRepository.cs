@@ -1,9 +1,10 @@
-﻿using ChatNode.Infrastructure.Configuration.Options;
-using ChatNode.Infrastructure.Exceptions;
+using ChatNode.Infrastructure.Configuration.Options;
+using ChatNode.Application.Exceptions;
 using ChatNode.Infrastructure.Mappers;
 using ChatNode.Infrastructure.Tools.Abstractions;
 using Domain.Entities;
 using Domain.Repositories;
+using Domain.ValueTypes;
 using Microsoft.Extensions.Options;
 using StackExchange.Redis;
 
@@ -14,16 +15,18 @@ public class ChatRepository(
     IOptions<ExpirationPolicyOption> exOptions,
     IExpirationSustainerTool expirationSustainerTool) : IChatRepository
 {
+    private const int MaxChatScan = 500;
+
     private readonly ExpirationPolicyOption _exOptions = exOptions.Value;
 
-    public async Task<Guid> CreateChatAsync(string title, Guid userId)
+    public async Task<Guid> CreateChatAsync(string title, Guid userId, ChatKind kind = ChatKind.Grant)
     {
         var id = Guid.NewGuid();
         var chatKey = $"chat:{id}";
         var userChatsKey = $"user:chats:{userId}";
         var messageStreamKey = $"chat:message-stream:{id}";
 
-        var chat = new Chat(id, userId, title);
+        var chat = new Chat(id, userId, title, kind);
         
         var expirationTimestamp = DateTimeOffset.UtcNow.AddSeconds(_exOptions.ChatExpirationSeconds).ToUnixTimeSeconds();
 
@@ -54,13 +57,13 @@ public class ChatRepository(
         return fields.ToChat(id);
     }
 
-    public async Task<IEnumerable<Chat>> GetUserChatsAsync(Guid userId, int limit, Guid? lastChatId)
+    public async Task<IEnumerable<Chat>> GetUserChatsAsync(Guid userId, int limit, Guid? lastChatId, ChatKind kind)
     {
         var userChatsKey = $"user:chats:{userId}";
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        
+
         await database.SortedSetRemoveRangeByScoreAsync(userChatsKey, 0, now);
-        
+
         double maxScore = double.PositiveInfinity;
 
         if (lastChatId.HasValue && lastChatId != Guid.Empty)
@@ -68,23 +71,39 @@ public class ChatRepository(
             var score = await database.SortedSetScoreAsync(userChatsKey, lastChatId.Value.ToString());
             if (score.HasValue)
             {
-                maxScore = score.Value - 0.0001; 
+                maxScore = score.Value - 0.0001;
             }
         }
-        
-        var ids = await database.SortedSetRangeByScoreAsync(
-            userChatsKey, 
-            stop: maxScore, 
-            start: 0, 
-            order: Order.Descending, 
-            take: limit);
-        
+
         var chats = new List<Chat>();
-        foreach (var idRaw in ids)
+        var scanned = 0;
+
+        while (chats.Count < limit && scanned < MaxChatScan)
         {
-            var fields = await database.HashGetAllAsync($"chat:{idRaw}");
-            if (fields.Length > 0) 
-                chats.Add(fields.ToChat(Guid.Parse(idRaw.ToString())));
+            var page = await database.SortedSetRangeByScoreWithScoresAsync(
+                userChatsKey,
+                stop: maxScore,
+                start: 0,
+                order: Order.Descending,
+                take: limit);
+
+            if (page.Length == 0) break;
+
+            scanned += page.Length;
+
+            foreach (var entry in page)
+            {
+                var fields = await database.HashGetAllAsync($"chat:{entry.Element}");
+                if (fields.Length == 0) continue;
+
+                var chat = fields.ToChat(Guid.Parse(entry.Element.ToString()));
+                if (chat.Kind != kind) continue;
+
+                chats.Add(chat);
+                if (chats.Count == limit) break;
+            }
+
+            maxScore = page[^1].Score - 0.0001;
         }
 
         return chats;
@@ -104,7 +123,7 @@ public class ChatRepository(
     {
         var chatKey = $"chat:{id}";
         var messageStreamKey = $"chat:message-stream:{id}";
-        var userIdRaw = await database.HashGetAsync(chatKey, "userId");
+        var userIdRaw = await database.HashGetAsync(chatKey, "UserId");
 
         var transaction = database.CreateTransaction();
         _ = transaction.KeyDeleteAsync(chatKey);
@@ -122,7 +141,7 @@ public class ChatRepository(
     public async Task<string> AddMessageAsync(Guid chatId, Message message)
     { 
         if (!await database.KeyExistsAsync($"chat:{chatId}")) 
-            throw new NotFoundException("Chat not found");
+            throw new NotFoundException("Чат не найден — возможно, он истёк.");
 
         var messageStreamKey = $"chat:message-stream:{chatId}";
         var messageToSave = message with { CreateAt = DateTime.Now };
@@ -146,12 +165,26 @@ public class ChatRepository(
             "COUNT", 
             limit);
 
-        var entries = (RedisResult[])result;
+        RedisResult[]? entries = (RedisResult[]?)result;
         if (entries == null || entries.Length == 0)
             return Enumerable.Empty<Message>();
         return entries
             .Select(e => e.ToMessage())
             .Reverse()
             .ToList();
+    }
+
+    public async Task<Message?> GetMessageAsync(Guid chatId, string messageId)
+    {
+        var messageStreamKey = $"chat:message-stream:{chatId}";
+
+        var result = await database.ExecuteAsync("XRANGE", messageStreamKey, messageId, messageId, "COUNT", 1);
+
+        var entries = (RedisResult[]?)result;
+        if (entries is null || entries.Length == 0) return null;
+
+        await expirationSustainerTool.SustainByChatIdAsync(chatId);
+
+        return entries[0].ToMessage();
     }
 }

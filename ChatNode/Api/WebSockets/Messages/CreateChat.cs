@@ -1,3 +1,9 @@
-﻿namespace ChatNode.Api.WebSockets.Messages;
+﻿using System.Text.Json.Serialization;
+using Domain.ValueTypes;
 
-public record CreateChat(string title);
+namespace ChatNode.Api.WebSockets.Messages;
+
+public record CreateChat(
+    string title,
+    [property: JsonConverter(typeof(JsonStringEnumConverter<ChatKind>))]
+    ChatKind kind = ChatKind.Grant);

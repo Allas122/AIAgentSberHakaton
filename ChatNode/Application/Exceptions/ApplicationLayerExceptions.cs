@@ -7,3 +7,5 @@ public class NotFoundException(string message) : InfrastructureLayerException(me
 public class PermissionDenied(string message) : InfrastructureLayerException(message);
 
 public class InvalidDocumentException(string message) : InfrastructureLayerException(message);
+
+public class InvalidRequestException(string message) : InfrastructureLayerException(message);

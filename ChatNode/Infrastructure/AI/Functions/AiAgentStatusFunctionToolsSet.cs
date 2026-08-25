@@ -7,7 +7,7 @@ using GigaChat.Net.Models;
 
 namespace ChatNode.Infrastructure.AI.Functions;
 
-public class AiAgentStatusFunctionToolsSet(Action<string> StatusHandler) : IFunctionToolsSet
+public class AiAgentStatusFunctionToolsSet(Func<string, Task> StatusHandler) : IFunctionToolsSet
 {
     private const int MaxStatusLength = 80;
  
@@ -35,16 +35,17 @@ public class AiAgentStatusFunctionToolsSet(Action<string> StatusHandler) : IFunc
         )
     ];
  
-    public string SendStatus(StatusArguments arg)
+    public async Task<string> SendStatus(StatusArguments arg)
     {
         string status = arg.Status ?? string.Empty;
- 
+
         if (status.Length > MaxStatusLength)
         {
             status = status[..MaxStatusLength] + "...";
         }
- 
-        StatusHandler?.Invoke(status);
+
+        if (StatusHandler is not null) await StatusHandler(status);
+
         return ToolJson.Serialize(new StatusSendReturn("Статус отправлен!"));
     }
 }

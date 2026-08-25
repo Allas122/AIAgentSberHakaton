@@ -1,9 +1,9 @@
-﻿using ChatNode.Infrastructure.AI.Agents.Abstractions;
-using ChatNode.Infrastructure.AI.Functions;
+﻿using ChatNode.Infrastructure.AI.Functions;
+using ChatNode.Infrastructure.AI.Metering;
 using ChatNode.Infrastructure.AI.Policy;
 using ChatNode.Infrastructure.Configuration.Options;
-using Domain.Entities;
 using Domain.Repositories;
+using Domain.ValueTypes;
 using GigaChat.Net;
 using GigaChat.Net.Models;
 using Microsoft.Extensions.Options;
@@ -17,76 +17,83 @@ public class ManualParserAgent(
     IGigaChatClient gigaChatClient,
     IManualRepository manualRepository,
     IOptions<GigaChatOptions> gigaChatOptions,
+    ITokenMeter tokenMeter,
+    ILoggerFactory loggerFactory,
     Guid manualId
-) : IAgent
+)
 {
     private readonly GigaChatOptions _gigaChatOptions = gigaChatOptions.Value;
- 
+
+    private readonly ILogger<ManualParserAgent> _logger = loggerFactory.CreateLogger<ManualParserAgent>();
+
     private const int TargetChunkSize = 4000;
- 
+
     private const int MaxBoundarySearchWindow = 1500;
- 
+
     private const int OverlapSize = 500;
     private const int MaxToolCallsPerChunk = 40;
 
+    private const int PreviewLength = 90;
+
     private const string ToolCallLimitMarker = "exceeded the maximum of";
 
-    public async Task<string> InvokeAsync(string fullPrompt, CancellationToken ct)
+    private const string BudgetReason = "модель исчерпала лимит вызовов инструментов на фрагмент";
+
+    private record FailedChunk(string Text, string Reason);
+
+    public async Task<ManualParseReport> ParseAsync(
+        string fullText,
+        Func<ManualParseProgress, Task>? onProgress,
+        CancellationToken ct)
     {
-        List<string> unresolvedChunks = new();
+        var chunks = SplitIntoStructuralChunks(fullText, TargetChunkSize, MaxBoundarySearchWindow);
+        var failed = new List<FailedChunk>();
 
-        try
+        int processed = 0;
+        string lastOverlap = "";
+
+        await ReportAsync(onProgress, chunks.Count, processed, failed.Count);
+
+        for (int i = 0; i < chunks.Count; i++)
         {
-            var chunks = SplitIntoStructuralChunks(fullPrompt, TargetChunkSize, MaxBoundarySearchWindow);
+            ct.ThrowIfCancellationRequested();
 
-            string lastOverlap = "";
+            string currentNewText = chunks[i];
 
-            for (int i = 0; i < chunks.Count; i++)
-            {
-                ct.ThrowIfCancellationRequested();
+            string promptWithContext = $"""
+                                        ### КОНТЕКСТ (уже обработано, НЕ добавлять повторно):
+                                        ...{lastOverlap}
 
-                string currentNewText = chunks[i];
+                                        ### НОВЫЙ ТЕКСТ ДЛЯ СЕГМЕНТАЦИИ (чанк {i + 1}/{chunks.Count}):
+                                        {currentNewText}
+                                        """;
 
-                string promptWithContext = $"""
-                                            ### КОНТЕКСТ (уже обработано, НЕ добавлять повторно):
-                                            ...{lastOverlap}
+            string? reason = await TryRunAsync(promptWithContext, $"чанк {i + 1}/{chunks.Count}", ct);
 
-                                            ### НОВЫЙ ТЕКСТ ДЛЯ СЕГМЕНТАЦИИ (чанк {i + 1}/{chunks.Count}):
-                                            {currentNewText}
-                                            """;
+            if (reason is null) processed++;
+            else failed.Add(new FailedChunk(currentNewText, reason));
 
-                bool exhausted = await TryRunAsync(promptWithContext, $"чанк {i + 1}/{chunks.Count}", ct);
+            lastOverlap = currentNewText.Length > OverlapSize
+                ? currentNewText[^OverlapSize..]
+                : currentNewText;
 
-                if (exhausted)
-                {
-                    unresolvedChunks.Add(currentNewText);
-                }
-
-                lastOverlap = currentNewText.Length > OverlapSize
-                    ? currentNewText[^OverlapSize..]
-                    : currentNewText;
-            }
-
-            if (unresolvedChunks.Count > 0)
-            {
-                return await RetryUnresolvedChunksAsync(unresolvedChunks, manualId, ct);
-            }
-
-            return "Мануал успешно обработан и сохранен в базу знаний!";
+            await ReportAsync(onProgress, chunks.Count, processed, failed.Count);
         }
-        catch (OperationCanceledException)
+
+        if (failed.Count == 0)
         {
-            await manualRepository.DeleteManualAsync(manualId);
-            return "Операция была прервана пользователем. Данные удалены.";
+            return new ManualParseReport(chunks.Count, processed, []);
         }
+
+        return await RetryFailedChunksAsync(chunks.Count, processed, failed, onProgress, ct);
     }
-    
-    private async Task<bool> TryRunAsync(string prompt, string label, CancellationToken ct)
+
+    private async Task<string?> TryRunAsync(string prompt, string label, CancellationToken ct)
     {
         try
         {
             await RunAsync(prompt, manualId, ct);
-            return false;
+            return null;
         }
         catch (OperationCanceledException)
         {
@@ -94,16 +101,27 @@ public class ManualParserAgent(
         }
         catch (Exception ex) when (IsToolCallLimit(ex))
         {
-            Console.WriteLine($"[PARSE BUDGET]: {label} -> лимит вызовов исчерпан, чанк уйдёт на повтор половинками");
-            return true;
+            _logger.LogWarning(
+                ex,
+                "Разбор методички {ManualId}: {Chunk} -> лимит вызовов исчерпан, чанк уйдёт на повтор половинками",
+                manualId,
+                label);
+
+            return BudgetReason;
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[PARSE FAILED]: {label} -> {GigaChatRetry.Describe(ex)}");
-            return true;
+            _logger.LogWarning(
+                ex,
+                "Разбор методички {ManualId}: {Chunk} не обработан -> {Failure}",
+                manualId,
+                label,
+                GigaChatRetry.Describe(ex));
+
+            return GigaChatRetry.Describe(ex);
         }
     }
-    
+
     private static List<string> SplitIntoStructuralChunks(string text, int targetSize, int searchWindow)
     {
         var chunks = new List<string>();
@@ -174,7 +192,10 @@ public class ManualParserAgent(
     
     private async Task RunAsync(string prompt, Guid manualId, CancellationToken ct)
     {
-        ManualFunctionsToolsSet manualFunctionsToolsSet = new ManualFunctionsToolsSet(manualRepository, manualId);
+        ManualFunctionsToolsSet manualFunctionsToolsSet = new ManualFunctionsToolsSet(
+            manualRepository,
+            manualId,
+            loggerFactory.CreateLogger<ManualFunctionsToolsSet>());
  
         Chat chat = new Chat()
         {
@@ -212,42 +233,72 @@ public class ManualParserAgent(
             Model = _gigaChatOptions.ManualParserAgentModel,
         };
  
-        await gigaChatClient.ChatWithToolsAsync(
-            chat,
-            manualFunctionsToolsSet.FunctionTools,
-            maxToolCalls: MaxToolCallsPerChunk,
-            cancellationToken: ct);
+        await tokenMeter.MeasureToolsAsync(
+            TokenOperation.ManualParse,
+            chat.Model,
+            () => gigaChatClient.ChatWithToolsAsync(
+                chat,
+                manualFunctionsToolsSet.FunctionTools,
+                maxToolCalls: MaxToolCallsPerChunk,
+                cancellationToken: ct));
     }
     
-    private async Task<string> RetryUnresolvedChunksAsync(List<string> unresolvedChunks, Guid manualId, CancellationToken ct)
+    private async Task<ManualParseReport> RetryFailedChunksAsync(
+        int totalChunks,
+        int processed,
+        List<FailedChunk> failed,
+        Func<ManualParseProgress, Task>? onProgress,
+        CancellationToken ct)
     {
-        var stillUnresolved = new List<string>();
+        var gaps = new List<ManualParseGap>();
 
-        Console.WriteLine($"[PARSE RETRY]: повторяю {unresolvedChunks.Count} чанк(ов) через {_gigaChatOptions.OperationRetryDelaySeconds:0.#} с");
+        _logger.LogInformation(
+            "Разбор методички {ManualId}: повторяю {Failed} чанк(ов) через {Delay:0.#} с",
+            manualId,
+            failed.Count,
+            _gigaChatOptions.OperationRetryDelaySeconds);
         await Task.Delay(TimeSpan.FromSeconds(_gigaChatOptions.OperationRetryDelaySeconds), ct);
 
-        foreach (var chunk in unresolvedChunks)
+        foreach (var chunk in failed)
         {
-            var subChunks = SplitIntoStructuralChunks(chunk, TargetChunkSize / 2, MaxBoundarySearchWindow / 2);
+            var subChunks = SplitIntoStructuralChunks(chunk.Text, TargetChunkSize / 2, MaxBoundarySearchWindow / 2);
+
+            bool recovered = true;
 
             foreach (var sub in subChunks)
             {
                 ct.ThrowIfCancellationRequested();
-                bool exhausted = await TryRunAsync(sub, "повторный фрагмент", ct);
-                if (exhausted)
-                {
-                    stillUnresolved.Add(sub);
-                }
+
+                string? reason = await TryRunAsync(sub, "повторный фрагмент", ct);
+                if (reason is null) continue;
+
+                recovered = false;
+                gaps.Add(new ManualParseGap(Preview(sub), reason));
             }
+
+            if (recovered) processed++;
+
+            await ReportAsync(onProgress, totalChunks, processed, totalChunks - processed);
         }
 
-        if (stillUnresolved.Count > 0)
-        {
-            return $"Мануал обработан, но {stillUnresolved.Count} фрагмент(ов) не удалось " +
-                   "гарантированно закрыть даже после повторной попытки — рекомендуется ручная проверка.";
-        }
+        return new ManualParseReport(totalChunks, processed, gaps);
+    }
 
-        return "Мануал успешно обработан и сохранен в базу знаний!";
+    private static Task ReportAsync(
+        Func<ManualParseProgress, Task>? onProgress,
+        int total,
+        int processed,
+        int failed) =>
+        onProgress?.Invoke(new ManualParseProgress(total, processed, failed)) ?? Task.CompletedTask;
+
+    private static string Preview(string fragment)
+    {
+        var line = fragment
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Select(x => x.Trim().TrimStart('#', '*', ' '))
+            .FirstOrDefault(x => x.Length > 0) ?? fragment.Trim();
+
+        return line.Length <= PreviewLength ? line : $"{line[..PreviewLength]}…";
     }
 
     private static bool IsToolCallLimit(Exception ex) =>

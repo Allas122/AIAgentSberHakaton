@@ -1,3 +1,4 @@
+using ChatNode.Infrastructure.AI.Metering;
 using ChatNode.Infrastructure.AI.Policy;
 using ChatNode.Infrastructure.AI.Services.Abstractions;
 using ChatNode.Infrastructure.Configuration.Options;
@@ -7,7 +8,11 @@ using Microsoft.Extensions.Options;
 
 namespace ChatNode.Infrastructure.AI.Services;
 
-public class EmbeddingClient(IGigaChatClient gigaChatClient, IOptions<GigaChatOptions> options) : IEmbeddingClient
+public class EmbeddingClient(
+    IGigaChatClient gigaChatClient,
+    IOptions<GigaChatOptions> options,
+    ITokenMeter tokenMeter,
+    ILogger<EmbeddingClient> logger) : IEmbeddingClient
 {
     private GigaChatOptions _options = options.Value;
 
@@ -24,10 +29,13 @@ public class EmbeddingClient(IGigaChatClient gigaChatClient, IOptions<GigaChatOp
     }
     
     private Task<Embeddings> EmbedAsync(IReadOnlyList<string> texts) =>
-        GigaChatRetry.ExecuteAsync(
-            ct => gigaChatClient.EmbeddingsAsync(texts, _options.EmbeddingModel, ct),
-            $"эмбеддинги ({texts.Count} шт.)",
-            _options.MaxOperationAttempts,
-            _options.OperationRetryDelaySeconds,
-            CancellationToken.None);
+        tokenMeter.MeasureEmbeddingsAsync(
+            _options.EmbeddingModel,
+            () => GigaChatRetry.ExecuteAsync(
+                ct => gigaChatClient.EmbeddingsAsync(texts, _options.EmbeddingModel, ct),
+                $"эмбеддинги ({texts.Count} шт.)",
+                _options.MaxOperationAttempts,
+                _options.OperationRetryDelaySeconds,
+                logger,
+                CancellationToken.None));
 }

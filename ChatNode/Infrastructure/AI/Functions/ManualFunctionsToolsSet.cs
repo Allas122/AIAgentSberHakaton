@@ -1,4 +1,4 @@
-﻿using System.Text.Json;
+using System.Text.Json;
 using ChatNode.Infrastructure.AI.Functions.Abstractions;
 using ChatNode.Infrastructure.AI.Functions.Arguments;
 using ChatNode.Infrastructure.AI.Functions.ReturnModels;
@@ -10,12 +10,15 @@ using GigaChat.Net.Models;
 
 namespace ChatNode.Infrastructure.AI.Functions;
 
-public class ManualFunctionsToolsSet(IManualRepository repository, Guid manualId) : IFunctionToolsSet
+public class ManualFunctionsToolsSet(
+    IManualRepository repository,
+    Guid manualId,
+    ILogger logger,
+    ManualCitationRegistry? citations = null) : IFunctionToolsSet
 {
     private const int MaxContentTokensApprox = 400;
     private const double ApproxCharsPerToken = 4.0;
     private const int MaxSearchResults = 3;
-    private const int MaxViewContentChars = 700;
 
     private readonly RepeatCallGuard _guard = new();
     public IReadOnlyList<IChatFunctionTool> FunctionTools =>
@@ -76,7 +79,6 @@ public class ManualFunctionsToolsSet(IManualRepository repository, Guid manualId
             ))
     ];
 
-
     public async Task<string> SearchInManualHandler(SearchArguments arguments)
     {
         if (_guard.IsRepeat("search_in_manual", arguments.Query))
@@ -89,12 +91,20 @@ public class ManualFunctionsToolsSet(IManualRepository repository, Guid manualId
         var parts = await repository.KnnSearchManualPartAsync(arguments.Query, limit, manualId);
 
         var views = parts
-            .Select(part => new ManualPartView(part.Title, part.Navigation, Trim(part.Content)))
+            .Select(part => new ManualPartView(
+                citations?.Register(part) ?? string.Empty,
+                part.Title,
+                part.Navigation,
+                part.Content))
             .ToList();
 
-        Console.WriteLine(
-            $"[SEARCHING]:{arguments.Query}:{limit} -> {views.Count}, " +
-            $"{views.Sum(view => view.Content.Length)} симв.");
+        logger.LogDebug(
+            "Методичка {ManualId}: поиск \"{Query}\" (limit={Limit}) -> {Found} частей, {Chars} симв.",
+            manualId,
+            arguments.Query,
+            limit,
+            views.Count,
+            views.Sum(view => view.Content.Length));
 
         return ToolJson.Serialize(views);
     }
@@ -144,8 +154,12 @@ public class ManualFunctionsToolsSet(IManualRepository repository, Guid manualId
             createdIds.Add(id);
         }
 
-        Console.WriteLine(
-            $"[AUTO-SPLIT]: {arguments.Title} (~{approxTokens} tokens) -> {finalPieces.Count} частей");
+        logger.LogDebug(
+            "Методичка {ManualId}: раздел \"{Title}\" (~{Tokens} токенов) разбит на {Pieces} частей",
+            manualId,
+            arguments.Title,
+            approxTokens,
+            finalPieces.Count);
 
         return ToolJson.Serialize(new
         {
@@ -167,21 +181,31 @@ public class ManualFunctionsToolsSet(IManualRepository repository, Guid manualId
             navigation
         );
 
-        Console.WriteLine($"[INDEXING]: {navigation} -> {title} ({content.Length} chars)");
+        logger.LogDebug(
+            "Методичка {ManualId}: индексирую {Navigation} -> {Title} ({Chars} симв.)",
+            manualId,
+            navigation,
+            title,
+            content.Length);
 
         return await repository.CreateManualPartAsync(manualPartDto.MapToManualPart());
     }
 
     public async Task<string> GetManualFullNavigation(NullableArguments s)
     {
-        var manualNavigation = (await repository.GetManualAsync(manualId)).Navigation;
-        var res = new GetManualFullNavigationReturn(manualNavigation);
+        var manual = await repository.GetManualAsync(manualId);
+        if (manual is null) return ManualGoneError();
+
+        var res = new GetManualFullNavigationReturn(manual.Navigation);
         return ToolJson.Serialize(res);
     }
 
     public async Task<string> AddManualFullNavigation(AddManualFullNavigationPartArgument arguments)
     {
-        var manual = (await repository.GetManualAsync(manualId)).MapToManualDto();
+        var stored = await repository.GetManualAsync(manualId);
+        if (stored is null) return ManualGoneError();
+
+        var manual = stored.MapToManualDto();
 
         var existingHeaders = SplitNavigation(manual.Navigation);
         string incoming = arguments.Navigation.Trim();
@@ -202,6 +226,13 @@ public class ManualFunctionsToolsSet(IManualRepository repository, Guid manualId
         var res = new SetManualFullNavigationReturn("Ok", "Навигация обновлена");
         return ToolJson.Serialize(res);
     }
+
+    private static string ManualGoneError() =>
+        ToolJson.Serialize(new
+        {
+            Status = "Error",
+            Message = "Методичка не найдена — похоже, её удалили. Прекрати добавлять части и заверши работу."
+        });
 
     private static List<string> SplitNavigation(string? navigation)
     {
@@ -230,9 +261,6 @@ public class ManualFunctionsToolsSet(IManualRepository repository, Guid manualId
 
         return false;
     }
-
-    private static string Trim(string content) =>
-        content.Length <= MaxViewContentChars ? content : content[..MaxViewContentChars] + "...";
 
     private static string Normalize(string s) =>
         s.Trim().ToLowerInvariant();

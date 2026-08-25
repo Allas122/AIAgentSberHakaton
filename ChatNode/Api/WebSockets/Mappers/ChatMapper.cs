@@ -9,6 +9,6 @@ public static partial class ChatMapper
 {
     public static Chat MapToChat(this ChatDto chat)
     {
-        return new Chat(chat.Id, chat.Title);
+        return new Chat(chat.Id, chat.Title, chat.Kind.ToString());
     }
 }

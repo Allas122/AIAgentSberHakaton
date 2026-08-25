@@ -1,3 +1,5 @@
+using Domain.ValueTypes;
+
 namespace Domain.Entities;
 
 public enum PinType
@@ -8,6 +10,13 @@ public enum PinType
     Attention = 3,
 }
 
-public record Pin(Guid Id, Guid SessionId, string Content, PinType Type, DateTimeOffset CreatedAt);
+public record Pin(
+    Guid Id,
+    Guid SessionId,
+    string Content,
+    PinType Type,
+    DateTimeOffset CreatedAt,
+    int? CriterionIndex = null,
+    FindingScope Scope = FindingScope.Fragment);
 
 public record PinMatch(Pin Pin, double Distance);

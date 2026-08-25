@@ -5,6 +5,7 @@ using ChatNode.Infrastructure.AI.Functions.Arguments;
 using ChatNode.Infrastructure.AI.Functions.ReturnModels;
 using Domain.Entities;
 using Domain.Repositories;
+using Domain.ValueTypes;
 using GigaChat.Net;
 using GigaChat.Net.Models;
 
@@ -13,8 +14,10 @@ namespace ChatNode.Infrastructure.AI.Functions;
 public class PinFunctionToolsSet(
     IPinRepository repository,
     Guid sessionId,
+    ILogger logger,
     double duplicateDistance = 0.15,
-    double searchDistance = 0.55) : IFunctionToolsSet
+    double searchDistance = 0.55,
+    FindingScope scope = FindingScope.Fragment) : IFunctionToolsSet
 {
     private readonly RepeatCallGuard _guard = new();
     private readonly List<PinJournalEntry> _journal = [];
@@ -28,7 +31,8 @@ public class PinFunctionToolsSet(
 
     private const string PinTypeDescription =
         "Категория: Mistake — нарушено требование методички, видно прямо в этом фрагменте; " +
-        "Attention — спорное место; WhatToCheck — нужно сверить с другими разделами заявки; " +
+        "Attention — требование заявлено, но не подтверждено: нет цифры, срока, расчёта или механизма; " +
+        "WhatToCheck — нужно сверить с другими разделами заявки; " +
         "Summary — о чём этот фрагмент, одна-две строки.";
 
     private static readonly string[] PinTypeValues = ["WhatToCheck", "Summary", "Mistake", "Attention"];
@@ -38,7 +42,9 @@ public class PinFunctionToolsSet(
     private static readonly Regex AbsenceWording = new(
         @"(не\s+указан\w*|не\s+приведен\w*|не\s+представлен\w*|не\s+описан\w*|не\s+прописан\w*|" +
         @"не\s+содержит\w*|не\s+раскрыт\w*|не\s+определ[её]н\w*|отсутству\w*|нет\s+информации|" +
-        @"не\s+хватает|не\s+упомян\w*|не\s+заполнен\w*)",
+        @"не\s+хватает|не\s+упомян\w*|не\s+заполнен\w*|не\s+сформулирован\w*|не\s+обоснован\w*|" +
+        @"не\s+найден\w*|не\s+обнаружен\w*|не\s+предусмотрен\w*|не\s+подтвержд\w*|" +
+        @"нет\s+раздела|нет\s+данных|нигде\s+не\s+)",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly Regex AnonymizationTag = new(@"\[[A-Z][A-Z_]*_[0-9A-F]+\]", RegexOptions.Compiled);
@@ -54,9 +60,12 @@ public class PinFunctionToolsSet(
                 new Dictionary<string, FunctionParametersProperty>()
                 {
                     ["content"] = FunctionParameter.String("Что найдено и какое требование методички затронуто."),
-                    ["pin_type"] = FunctionParameter.String(PinTypeDescription, PinTypeValues)
+                    ["pin_type"] = FunctionParameter.String(PinTypeDescription, PinTypeValues),
+                    ["criterion"] = FunctionParameter.Integer(
+                        "Номер критерия оценки, к которому относится находка, из списка КРИТЕРИИ. " +
+                        "Если находка не ложится ни на один критерий — 0.")
                 },
-                required: ["content", "pin_type"]
+                required: ["content", "pin_type", "criterion"]
             )
         ),
         FunctionTool.Create<UpdatePinArguments>(
@@ -143,7 +152,12 @@ public class PinFunctionToolsSet(
 
         if (duplicate is not null)
         {
-            Console.WriteLine($"[PIN DUPLICATE]: {pinType} -> {duplicate.Pin.Id} (расстояние {duplicate.Distance:0.###})");
+            logger.LogDebug(
+                "Заметки чата {ChatId}: дубликат {PinType} -> {PinId} (расстояние {Distance:0.###})",
+                sessionId,
+                pinType,
+                duplicate.Pin.Id,
+                duplicate.Distance);
 
             return ToolJson.Serialize(new CreatePinReturn(
                 "Duplicate",
@@ -153,10 +167,12 @@ public class PinFunctionToolsSet(
                 duplicate.Pin.Id));
         }
 
-        var pinId = await repository.CreatePinAsync(
-            new Pin(Guid.NewGuid(), sessionId, content, pinType, DateTimeOffset.UtcNow));
+        var criterion = arguments.Criterion > 0 ? arguments.Criterion : (int?)null;
 
-        Console.WriteLine($"[PIN CREATED]: {pinType} -> {pinId}");
+        var pinId = await repository.CreatePinAsync(
+            new Pin(Guid.NewGuid(), sessionId, content, pinType, DateTimeOffset.UtcNow, criterion, scope));
+
+        logger.LogDebug("Заметки чата {ChatId}: создана {PinType} -> {PinId}", sessionId, pinType, pinId);
 
         _journal.Add(new PinJournalEntry(PinAction.Created, pinType, content));
 
@@ -203,8 +219,12 @@ public class PinFunctionToolsSet(
             return Error($"Заметка {pinId} не найдена.");
         }
 
-        Console.WriteLine(
-            $"[PIN UPDATED]: {pin.Type}{(storedType == pin.Type ? string.Empty : $" -> {storedType}")} -> {pinId}");
+        logger.LogDebug(
+            "Заметки чата {ChatId}: обновлена {PreviousType} -> {PinType} {PinId}",
+            sessionId,
+            pin.Type,
+            storedType,
+            pinId);
 
         _journal.Add(new PinJournalEntry(PinAction.Updated, storedType, content));
 
@@ -238,7 +258,12 @@ public class PinFunctionToolsSet(
             return Error($"Заметка {pinId} не найдена.");
         }
 
-        Console.WriteLine($"[PIN DELETED]: {pin.Type} -> {pinId} ({Shorten(Sanitize(arguments.Reason))})");
+        logger.LogDebug(
+            "Заметки чата {ChatId}: удалена {PinType} -> {PinId} ({Reason})",
+            sessionId,
+            pin.Type,
+            pinId,
+            Shorten(Sanitize(arguments.Reason)));
 
         _journal.Add(new PinJournalEntry(PinAction.Deleted, pin.Type, pin.Content));
 
@@ -275,7 +300,11 @@ public class PinFunctionToolsSet(
             .Select(match => ToView(match.Pin))
             .ToList();
 
-        Console.WriteLine($"[PIN SEARCH]: {Shorten(query)} -> {matched.Count} совпадений");
+        logger.LogDebug(
+            "Заметки чата {ChatId}: поиск \"{Query}\" -> {Matched} совпадений",
+            sessionId,
+            Shorten(query),
+            matched.Count);
 
         return ToolJson.Serialize(new GetPinsReturn("Ok", matched.Count, matched));
     }
@@ -291,16 +320,21 @@ public class PinFunctionToolsSet(
         var all = (await repository.GetPinsAsync(sessionId, filter)).ToList();
         var pins = all.TakeLast(MaxGetPinsLimit).Select(ToView).ToList();
 
-        Console.WriteLine($"[PIN LIST]: {pins.Count} из {all.Count}");
+        logger.LogDebug("Заметки чата {ChatId}: выдано {Returned} из {Total}", sessionId, pins.Count, all.Count);
 
         return ToolJson.Serialize(new GetPinsReturn("Ok", all.Count, pins));
     }
 
-    private static PinType Downgrade(PinType requested, string content) =>
-        requested is PinType.Mistake or PinType.Attention &&
-        (AbsenceWording.IsMatch(content) || AnonymizationTag.IsMatch(content))
+    private PinType Downgrade(PinType requested, string content)
+    {
+        if (requested is not (PinType.Mistake or PinType.Attention)) return requested;
+
+        if (AnonymizationTag.IsMatch(content)) return PinType.WhatToCheck;
+
+        return scope == FindingScope.Fragment && AbsenceWording.IsMatch(content)
             ? PinType.WhatToCheck
             : requested;
+    }
 
     private static string DowngradeNote(PinType requested, PinType stored, string content)
     {

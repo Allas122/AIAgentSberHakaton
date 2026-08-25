@@ -6,5 +6,6 @@ public enum UserRole
     User = 1,
     Agent = 2,
     Coordinator = 3,
-    Guest = 4
+    Guest = 4,
+    Rector = 5
 }

@@ -20,26 +20,31 @@
           <PrivateAssets>all</PrivateAssets>
           <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
         </PackageReference>
-        <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.10"/>
-        <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="9.0.6"/>
-        <PackageReference Include="Microsoft.IdentityModel.Tokens" Version="8.19.2"/>
-        <PackageReference Include="Riok.Mapperly" Version="4.3.1"/>
-        <PackageReference Include="Scalar.AspNetCore" Version="2.16.15"/>
+        <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.10" />
+        <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.11" />
+        <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.11">
+          <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+          <PrivateAssets>all</PrivateAssets>
+        </PackageReference>
+        <PackageReference Include="Microsoft.IdentityModel.Tokens" Version="8.19.2" />
+        <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
+        <PackageReference Include="Riok.Mapperly" Version="4.3.1" />
+        <PackageReference Include="Scalar.AspNetCore" Version="2.16.15" />
         <PackageReference Include="SharpGrip.FluentValidation.AutoValidation.Mvc" Version="2.0.0" />
-        <PackageReference Include="StackExchange.Redis" Version="3.0.17"/>
-        <PackageReference Include="System.IdentityModel.Tokens.Jwt" Version="8.19.2"/>
+        <PackageReference Include="StackExchange.Redis" Version="2.8.58" />
+        <PackageReference Include="System.IdentityModel.Tokens.Jwt" Version="8.19.2" />
     </ItemGroup>
 
     <ItemGroup>
-        <ProjectReference Include="..\Domain\Domain.csproj"/>
+        <ProjectReference Include="..\Domain\Domain.csproj" />
     </ItemGroup>
 
     <ItemGroup>
-        <None Remove="Resources\russian_ca.cer"/>
-        <None Remove="Resources\russian_ca_gost_2025.cer"/>
+        <None Remove="Resources\russian_ca.cer" />
+        <None Remove="Resources\russian_ca_gost_2025.cer" />
 
-        <EmbeddedResource Include="Resources\russian_ca.cer"/>
-        <EmbeddedResource Include="Resources\russian_ca_gost_2025.cer"/>
+        <EmbeddedResource Include="Resources\russian_ca.cer" />
+        <EmbeddedResource Include="Resources\russian_ca_gost_2025.cer" />
     </ItemGroup>
 
     <ItemGroup>

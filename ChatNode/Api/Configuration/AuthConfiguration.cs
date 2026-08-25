@@ -1,9 +1,10 @@
-﻿using System.Text;
+using System.Text;
 using ChatNode.Infrastructure.Auth;
 using ChatNode.Infrastructure.Configuration.Options;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
+using Domain.ValueTypes;
 
 namespace ChatNode.Api.Configuration;
 
@@ -12,8 +13,18 @@ public static class AuthConfiguration
     public static IServiceCollection AddAuthConfiguration(this IServiceCollection services,
         IConfiguration configuration)
     {
-        var jwtOptions = configuration.GetSection("Jwt").Get<JwtOptions>();
-        var key = Encoding.UTF8.GetBytes(jwtOptions.SecretKey);
+        var jwtOptions = configuration.GetSection("Jwt").Get<JwtOptions>()
+                         ?? throw new InvalidOperationException(
+                             "Секция конфигурации 'Jwt' не задана — нечем подписывать токены.");
+
+        var key = Encoding.UTF8.GetBytes(jwtOptions.SecretKey ?? string.Empty);
+
+        if (key.Length < 32)
+        {
+            throw new InvalidOperationException(
+                $"Jwt:SecretKey должен быть минимум 32 байта, сейчас {key.Length}. " +
+                "Задайте JWT_SECRET_KEY длиннее.");
+        }
 
         services.AddAuthentication(options =>
             {
@@ -35,7 +46,19 @@ public static class AuthConfiguration
                 };
             }).AddScheme<AuthenticationSchemeOptions,TicketAuthHandler>("WebSocketScheme", null);
 
-        services.AddAuthorization();
+        services.AddAuthorization(options =>
+        {
+            options.AddPolicy(AuthPolicies.Staff, policy =>
+                policy.RequireRole(
+                    nameof(UserRole.Rector),
+                    nameof(UserRole.Coordinator)));
+        });
+
         return services;
     }
+}
+
+public static class AuthPolicies
+{
+    public const string Staff = "Staff";
 }

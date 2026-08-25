@@ -1,3 +1,5 @@
-﻿namespace Domain.Entities;
+﻿using Domain.ValueTypes;
 
-public record Chat(Guid Id, Guid UserId, string Title);
+namespace Domain.Entities;
+
+public record Chat(Guid Id, Guid UserId, string Title, ChatKind Kind = ChatKind.Grant);

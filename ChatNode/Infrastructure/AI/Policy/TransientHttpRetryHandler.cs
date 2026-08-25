@@ -2,7 +2,10 @@ using System.Net.Sockets;
 
 namespace ChatNode.Infrastructure.AI.Policy;
 
-public sealed class TransientHttpRetryHandler(int maxRetries, double backoffFactor) : DelegatingHandler
+public sealed class TransientHttpRetryHandler(
+    int maxRetries,
+    double backoffFactor,
+    ILogger<TransientHttpRetryHandler> logger) : DelegatingHandler
 {
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
     {
@@ -14,9 +17,11 @@ public sealed class TransientHttpRetryHandler(int maxRetries, double backoffFact
             }
             catch (Exception ex) when (GigaChatRetry.IsHandshakeFailure(ex))
             {
-                Console.WriteLine(
-                    $"[GIGACHAT TLS]: {request.RequestUri} -> {Describe(ex)}. " +
-                    $"Рукопожатие не состоялось — повторы не выполняются");
+                logger.LogError(
+                    ex,
+                    "GigaChat: рукопожатие TLS с {RequestUri} не состоялось ({Failure}), повторы не выполняются",
+                    request.RequestUri,
+                    Describe(ex));
 
                 throw;
             }
@@ -24,9 +29,14 @@ public sealed class TransientHttpRetryHandler(int maxRetries, double backoffFact
             {
                 var delay = TimeSpan.FromSeconds(backoffFactor * Math.Pow(2, attempt));
 
-                Console.WriteLine(
-                    $"[GIGACHAT TRANSPORT]: {request.RequestUri} -> {Describe(ex)}. " +
-                    $"Повтор {attempt + 1}/{maxRetries} через {delay.TotalSeconds:0.#} с");
+                logger.LogWarning(
+                    ex,
+                    "GigaChat: транспортная ошибка на {RequestUri} ({Failure}), повтор {Attempt}/{MaxRetries} через {Delay:0.#} с",
+                    request.RequestUri,
+                    Describe(ex),
+                    attempt + 1,
+                    maxRetries,
+                    delay.TotalSeconds);
 
                 await Task.Delay(delay, ct);
             }

@@ -16,14 +16,21 @@ public static class StorageInjector
             var config = new AmazonS3Config
             {
                 ServiceURL = s3Options.ServiceUrl,
-                ForcePathStyle = true,
+                ForcePathStyle = s3Options.ForcePathStyle,
                 UseHttp = s3Options.UseHttp,
                 AuthenticationRegion = "us-east-1"
             };
-            return new AmazonS3Client(new AnonymousAWSCredentials(), config);
+
+            AWSCredentials credentials =
+                string.IsNullOrWhiteSpace(s3Options.AccessKey) || string.IsNullOrWhiteSpace(s3Options.SecretKey)
+                    ? new AnonymousAWSCredentials()
+                    : new BasicAWSCredentials(s3Options.AccessKey, s3Options.SecretKey);
+
+            return new AmazonS3Client(credentials, config);
         });
 
         services.AddSingleton<IFileStorage, S3FileStorage>();
+        services.AddScoped<IDocumentRegistry, DocumentRegistry>();
 
         return services;
     }

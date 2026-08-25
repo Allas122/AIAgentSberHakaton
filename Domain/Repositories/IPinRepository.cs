@@ -8,6 +8,8 @@ public interface IPinRepository
     public Task<Pin?> GetPinAsync(Guid sessionId, Guid pinId);
     public Task<bool> UpdatePinAsync(Pin pin);
     public Task<bool> DeletePinAsync(Guid sessionId, Guid pinId);
+    
+    public Task<int> DeletePinsAsync(Guid sessionId);
 
     public Task<IEnumerable<Pin>> GetPinsAsync(Guid sessionId, PinType? type = null);
 

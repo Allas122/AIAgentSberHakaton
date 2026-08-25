@@ -1,4 +1,6 @@
-﻿using ChatNode.Api.Rest.Messages.Auth;
+﻿using ChatNode.Api.Rest.Messages.Accounts;
+using ChatNode.Api.Rest.Messages.Auth;
+using ChatNode.Application.DTO;
 using ChatNode.Application.Services.Abstractons;
 using ChatNode.Infrastructure.Auth.Abstractions;
 using ChatNode.Infrastructure.Tools;
@@ -14,6 +16,7 @@ namespace ChatNode.Api.Rest.Controllers;
 [Route("api/auth")]
 public class AuthController(
     IUserService userService,
+    IAccountService accountService,
     IJwtProvider jwtProvider,
     ITicketProvider ticketProvider
 ) : ControllerBase
@@ -23,6 +26,25 @@ public class AuthController(
     {
         var guestId = await userService.CreateGuestAsync();
         return Ok(await jwtProvider.GenerateTokenPairAsync(guestId, UserRole.Guest, "guest"));
+    }
+
+    [HttpPost("register")]
+    public async Task<IActionResult> Register([FromBody] RegisterRequest request)
+    {
+        var account = await accountService.RegisterAsync(
+            new RegisterAccountDto(request.Login, request.Password, request.Name, request.Email));
+
+        return Ok(await jwtProvider.GenerateTokenPairAsync(account.Id, account.Role, account.Name));
+    }
+
+    [HttpPost("login")]
+    public async Task<IActionResult> Login([FromBody] LoginRequest request)
+    {
+        var user = await userService.LoginAsync(request.Login, request.Password);
+
+        if (user is null) return Unauthorized("Неверный логин или пароль.");
+
+        return Ok(await jwtProvider.GenerateTokenPairAsync(user.Id, user.Role, user.Name));
     }
 
     [HttpPost("refresh")]

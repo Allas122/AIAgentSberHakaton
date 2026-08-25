@@ -10,6 +10,7 @@ public static class GigaChatRetry
         string operation,
         int attempts,
         double firstDelaySeconds,
+        ILogger logger,
         CancellationToken ct)
     {
         for (var attempt = 1; ; attempt++)
@@ -25,9 +26,14 @@ public static class GigaChatRetry
             {
                 var delay = TimeSpan.FromSeconds(firstDelaySeconds * Math.Pow(2, attempt - 1));
 
-                Console.WriteLine(
-                    $"[GIGACHAT RETRY]: {operation} -> {Describe(ex)}. " +
-                    $"Попытка {attempt + 1}/{attempts} через {delay.TotalSeconds:0.#} с");
+                logger.LogWarning(
+                    ex,
+                    "GigaChat: операция {Operation} не удалась ({Failure}), попытка {NextAttempt}/{Attempts} через {Delay:0.#} с",
+                    operation,
+                    Describe(ex),
+                    attempt + 1,
+                    attempts,
+                    delay.TotalSeconds);
 
                 await Task.Delay(delay, ct);
             }

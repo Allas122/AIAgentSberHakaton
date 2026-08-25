@@ -119,23 +119,27 @@ class PIIAnonymizationEngine:
         return False
 
     def _chunk_text(self, text):
-        encoding = self.tokenizer(text, return_offsets_mapping=True, add_special_tokens=False)
+        with self._lock:
+            encoding = self.tokenizer(text, return_offsets_mapping=True, add_special_tokens=False)
+
         offsets = encoding["offset_mapping"]
 
         if len(offsets) <= CHUNK_MAX_TOKENS:
-            yield 0, text
-            return
+            return [(0, text)]
 
+        chunks = []
         start_tok = 0
         n = len(offsets)
         while start_tok < n:
             end_tok = min(start_tok + CHUNK_MAX_TOKENS, n)
             char_start = offsets[start_tok][0]
             char_end = offsets[end_tok - 1][1]
-            yield char_start, text[char_start:char_end]
+            chunks.append((char_start, text[char_start:char_end]))
             if end_tok == n:
                 break
             start_tok = end_tok - CHUNK_OVERLAP_TOKENS
+
+        return chunks
 
     @staticmethod
     def _trim_span(text, start, end):

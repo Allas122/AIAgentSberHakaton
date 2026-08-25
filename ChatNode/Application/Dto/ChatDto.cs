@@ -1,3 +1,5 @@
-﻿namespace ChatNode.Application.DTO;
+﻿using Domain.ValueTypes;
 
-public record ChatDto(Guid Id, Guid UserId, string Title);
+namespace ChatNode.Application.DTO;
+
+public record ChatDto(Guid Id, Guid UserId, string Title, ChatKind Kind);

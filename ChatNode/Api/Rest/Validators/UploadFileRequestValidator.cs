@@ -16,7 +16,7 @@ public class UploadFileRequestValidator : AbstractValidator<UploadFileRequest>
 
         RuleFor(x => x.File)
             .NotNull().WithMessage("Файл обязателен")
-            .MaxFileSize(50 * 1024 * 1024)
+            .MaxFileSize(UploadLimits.MaxDocxBytes)
             .AllowedExtensions([".docx"]).WithMessage("Заявка должна быть в формате .docx");
     }
 }

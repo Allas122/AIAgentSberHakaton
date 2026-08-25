@@ -28,4 +28,6 @@ public record GigaChatOptions
     public int MaxOperationAttempts { get; init; } = 2;
 
     public double OperationRetryDelaySeconds { get; init; } = 5.0;
+
+    public string AgentTimeZoneId { get; init; } = "Europe/Moscow";
 }

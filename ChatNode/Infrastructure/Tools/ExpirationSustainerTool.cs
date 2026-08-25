@@ -1,5 +1,5 @@
-﻿using ChatNode.Infrastructure.Configuration.Options;
-using ChatNode.Infrastructure.Exceptions;
+using ChatNode.Infrastructure.Configuration.Options;
+using ChatNode.Application.Exceptions;
 using ChatNode.Infrastructure.Tools.Abstractions;
 using Microsoft.Extensions.Options;
 using StackExchange.Redis;
@@ -19,10 +19,15 @@ public class ExpirationSustainerTool(
 
         var batch = database.CreateBatch();
 
-        _ = batch.KeyExpireAsync(userKey, TimeSpan.FromSeconds(_policy.UserExpirationSeconds));
-        _ = batch.KeyExpireAsync(userChatsKey, TimeSpan.FromSeconds(_policy.UserExpirationSeconds));
+        var pending = new[]
+        {
+            batch.KeyExpireAsync(userKey, TimeSpan.FromSeconds(_policy.UserExpirationSeconds)),
+            batch.KeyExpireAsync(userChatsKey, TimeSpan.FromSeconds(_policy.UserExpirationSeconds))
+        };
 
-        batch.Execute(); 
+        batch.Execute();
+
+        await Task.WhenAll(pending);
     }
 
     public async Task SustainByChatIdAsync(Guid chatId)
@@ -33,7 +38,7 @@ public class ExpirationSustainerTool(
         var userIdRaw = await database.HashGetAsync(chatKey, "UserId");
 
         if (userIdRaw.IsNull || !Guid.TryParse(userIdRaw.ToString(), out var userId))
-            throw new NotFoundException("User not found");
+            throw new NotFoundException("Владелец чата не найден — возможно, сессия истекла.");
 
         var userChatsKey = $"user:chats:{userId}";
         
@@ -41,16 +46,18 @@ public class ExpirationSustainerTool(
 
         var batch = database.CreateBatch();
 
-        _ = batch.KeyExpireAsync(chatKey, TimeSpan.FromSeconds(_policy.ChatExpirationSeconds));
-        _ = batch.KeyExpireAsync(streamKey, TimeSpan.FromSeconds(_policy.MessageStreamExpirationSeconds));
-
-        _ = batch.SortedSetAddAsync(userChatsKey, chatId.ToString(), newExpirationTime.ToUnixTimeSeconds());
-
-        _ = batch.KeyExpireAsync(userChatsKey, TimeSpan.FromSeconds(_policy.UserExpirationSeconds));
-        
-        _ = batch.KeyExpireAsync($"user:{userId}", TimeSpan.FromSeconds(_policy.UserExpirationSeconds));
+        var pending = new Task[]
+        {
+            batch.KeyExpireAsync(chatKey, TimeSpan.FromSeconds(_policy.ChatExpirationSeconds)),
+            batch.KeyExpireAsync(streamKey, TimeSpan.FromSeconds(_policy.MessageStreamExpirationSeconds)),
+            batch.SortedSetAddAsync(userChatsKey, chatId.ToString(), newExpirationTime.ToUnixTimeSeconds()),
+            batch.KeyExpireAsync(userChatsKey, TimeSpan.FromSeconds(_policy.UserExpirationSeconds)),
+            batch.KeyExpireAsync($"user:{userId}", TimeSpan.FromSeconds(_policy.UserExpirationSeconds))
+        };
 
         batch.Execute();
+
+        await Task.WhenAll(pending);
     }
 
     public async Task SustainByMessageStreamIdAsync(Guid messageStreamId)

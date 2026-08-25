@@ -1,4 +1,4 @@
-﻿using Microsoft.OpenApi.Models;
+using Microsoft.OpenApi;
 
 namespace ChatNode.Api.Configuration;
 
@@ -11,29 +11,24 @@ public static class ScalarConfiguration
             options.AddDocumentTransformer((document, context, cancellationToken) =>
             {
                 document.Components ??= new OpenApiComponents();
-                document.Components.SecuritySchemes.Add("Bearer", new OpenApiSecurityScheme
+                document.Components.SecuritySchemes ??= new Dictionary<string, IOpenApiSecurityScheme>();
+                document.Components.SecuritySchemes["Bearer"] = new OpenApiSecurityScheme
                 {
                     Type = SecuritySchemeType.Http,
                     Scheme = "bearer",
                     BearerFormat = "JWT"
-                });
-                document.SecurityRequirements.Add(new OpenApiSecurityRequirement
+                };
+
+                document.Security ??= [];
+                document.Security.Add(new OpenApiSecurityRequirement
                 {
-                    {
-                        new OpenApiSecurityScheme
-                        {
-                            Reference = new OpenApiReference
-                            {
-                                Type = ReferenceType.SecurityScheme,
-                                Id = "Bearer"
-                            }
-                        },
-                        Array.Empty<string>()
-                    }
+                    { new OpenApiSecuritySchemeReference("Bearer", document), new List<string>() }
                 });
+
                 return Task.CompletedTask;
             });
         });
+
         return services;
     }
 }

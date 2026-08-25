@@ -24,14 +24,16 @@ public class DocxTextExtractor : IDocxTextExtractor
         var sections = new List<ApplicationSectionDto>();
         var headingStack = new List<string>();
         var content = new StringBuilder();
+        var headingPending = false;
 
         void Flush()
         {
-            if (content.Length == 0) return;
+            if (content.Length == 0 && !headingPending) return;
 
             var title = headingStack.Count > 0 ? string.Join(" > ", headingStack) : DefaultSectionTitle;
             sections.Add(new ApplicationSectionDto(title, content.ToString().TrimEnd()));
             content.Clear();
+            headingPending = false;
         }
 
         void HandleParagraph(Paragraph paragraph)
@@ -54,6 +56,7 @@ public class DocxTextExtractor : IDocxTextExtractor
 
             headingStack.RemoveRange(depth, headingStack.Count - depth);
             headingStack.Add(text);
+            headingPending = true;
         }
 
         void Walk(OpenXmlElement container)
@@ -89,6 +92,58 @@ public class DocxTextExtractor : IDocxTextExtractor
         Flush();
 
         return sections;
+    }
+
+    public IReadOnlyList<string> ExtractLines(Stream docxStream)
+    {
+        using var wordDoc = WordprocessingDocument.Open(docxStream, false);
+
+        var body = wordDoc.MainDocumentPart?.Document?.Body;
+        if (body is null) return [];
+
+        var lines = new List<string>();
+
+        void Walk(OpenXmlElement container)
+        {
+            foreach (var element in container.ChildElements)
+            {
+                switch (element)
+                {
+                    case Paragraph paragraph:
+                        var text = Normalize(paragraph.InnerText);
+                        if (text.Length > 0) lines.Add(text);
+                        break;
+
+                    case Table table:
+                        foreach (var row in Enumerate<TableRow>(table))
+                        {
+                            var cells = Enumerate<TableCell>(row)
+                                .Select(cell => Normalize(cell.InnerText))
+                                .Where(cell => cell.Length > 0)
+                                .Distinct()
+                                .ToList();
+
+                            if (cells.Count > 0) lines.Add(string.Join(" | ", cells));
+                        }
+
+                        break;
+
+                    case AlternateContent alternate:
+                        var branch = (OpenXmlElement?)alternate.GetFirstChild<AlternateContentChoice>()
+                                     ?? alternate.GetFirstChild<AlternateContentFallback>();
+                        if (branch is not null) Walk(branch);
+                        break;
+
+                    default:
+                        if (element.HasChildren) Walk(element);
+                        break;
+                }
+            }
+        }
+
+        Walk(body);
+
+        return lines;
     }
 
     private static int? GetHeadingLevel(Paragraph paragraph, string text)
