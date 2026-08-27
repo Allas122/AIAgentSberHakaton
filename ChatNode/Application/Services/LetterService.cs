@@ -82,7 +82,7 @@ public class LetterService(
             return new LetterReplyDto(reply, assignments, warnings, null, null);
         }
 
-        reply = StripSalutation(reply, warnings);
+        reply = TrimBody(reply, profile, warnings);
 
         var document = await RenderAsync(userId, stored!, profile, addressee, salutation, requisites, reply, warnings, ct);
 
@@ -166,19 +166,88 @@ public class LetterService(
         return (documentId, fileName);
     }
 
-    private static string StripSalutation(string reply, List<string> warnings)
-    {
-        var lines = reply.Replace("\r\n", "\n").Split('\n');
+    private static readonly string[] ClosingMarkers =
+    [
+        "С уважением",
+        "С наилучшими пожеланиями",
+        "Искренне Ваш",
+        "Приложение:"
+    ];
 
-        if (lines.Length == 0 || !lines[0].TrimStart().StartsWith("Уважаем", StringComparison.OrdinalIgnoreCase))
+    private static string TrimBody(string reply, OrganizationProfileDto profile, List<string> warnings)
+    {
+        var lines = reply.Replace("\r\n", "\n").Split('\n').Select(line => line.TrimEnd()).ToList();
+
+        if (lines.Count > 0 && lines[0].TrimStart().StartsWith("Уважаем", StringComparison.OrdinalIgnoreCase))
         {
-            return reply;
+            lines.RemoveAt(0);
+            warnings.Add("Модель добавила обращение в текст — убрал его, на бланке обращение уже есть.");
         }
 
-        warnings.Add("Модель добавила обращение в текст — убрал его, на бланке обращение уже есть.");
+        var closing = lines.FindIndex(line =>
+            ClosingMarkers.Any(marker => line.TrimStart().StartsWith(marker, StringComparison.OrdinalIgnoreCase)));
 
-        return string.Join("\n", lines.Skip(1)).TrimStart('\n');
+        if (closing >= 0)
+        {
+            lines = lines.Take(closing).ToList();
+            warnings.Add("Модель добавила подпись в конце текста — убрал её, на бланке уже есть подпись и приложение.");
+        }
+
+        if (StripTrailingSignature(lines, profile))
+        {
+            warnings.Add("Модель подписала текст — убрал подпись, на бланке она уже есть.");
+        }
+
+        var body = string.Join("\n", lines).Trim('\n', ' ');
+
+        if (DuplicatesContacts(body, profile))
+        {
+            warnings.Add(
+                "В тексте письма встречаются контакты из карточки организации — "
+                + "на бланке блок «Контактное лицо» уже есть, проверьте, не задвоились ли они.");
+        }
+
+        return body;
     }
+
+    private static bool StripTrailingSignature(List<string> lines, OrganizationProfileDto profile)
+    {
+        var marks = new[]
+            {
+                profile.SignerName, profile.SignerPosition,
+                profile.ContactName, profile.ContactPosition,
+                profile.ContactPhone, profile.ContactEmail
+            }
+            .Where(mark => !string.IsNullOrWhiteSpace(mark))
+            .Select(mark => mark.Trim())
+            .ToList();
+
+        if (marks.Count == 0) return false;
+
+        var removed = false;
+
+        while (lines.Count > 0)
+        {
+            var last = lines[^1].Trim();
+
+            if (last.Length == 0)
+            {
+                lines.RemoveAt(lines.Count - 1);
+                continue;
+            }
+
+            if (!marks.Any(mark => last.Contains(mark, StringComparison.OrdinalIgnoreCase))) break;
+
+            lines.RemoveAt(lines.Count - 1);
+            removed = true;
+        }
+
+        return removed;
+    }
+
+    private static bool DuplicatesContacts(string body, OrganizationProfileDto profile) =>
+        new[] { profile.ContactPhone, profile.ContactEmail }
+            .Any(value => !string.IsNullOrWhiteSpace(value) && body.Contains(value.Trim(), StringComparison.OrdinalIgnoreCase));
 
     private static string FileNameOf(LetterRequisitesDto requisites)
     {
