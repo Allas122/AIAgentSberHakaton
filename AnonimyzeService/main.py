@@ -73,6 +73,7 @@ TRIM_CHARS = " \t\n\r\v\f«»\"'`“”„.,;:!?()[]{}<>-–—/\\|"
 
 CHUNK_MAX_TOKENS = _env_int("CHUNK_MAX_TOKENS", 400)
 CHUNK_OVERLAP_TOKENS = _env_int("CHUNK_OVERLAP_TOKENS", 50)
+NER_BATCH_SIZE = _env_int("NER_BATCH_SIZE", 8)
 
 class PIIAnonymizationEngine:
     def __init__(self):
@@ -83,6 +84,9 @@ class PIIAnonymizationEngine:
         logger.info("Loading model %s (revision=%s) on device=%s", model_id, model_revision, device)
         self.tokenizer = AutoTokenizer.from_pretrained(model_id, revision=model_revision)
         self.model = AutoModelForTokenClassification.from_pretrained(model_id, revision=model_revision)
+
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token or self.tokenizer.sep_token
         self.ner_pipeline = pipeline(
             "ner",
             model=self.model,
@@ -163,20 +167,35 @@ class PIIAnonymizationEngine:
 
         return start, end
 
+    def _infer(self, chunks):
+        texts = [text for _, text in chunks]
+
+        try:
+            with self._lock:
+                return self.ner_pipeline(texts, batch_size=NER_BATCH_SIZE)
+        except Exception:
+            logger.exception("NER pipeline failed on batch of %d chunks, retrying one by one", len(texts))
+
+        results = []
+        for offset, text in chunks:
+            try:
+                with self._lock:
+                    results.append(self.ner_pipeline(text))
+            except Exception:
+                logger.exception("NER pipeline failed on chunk at offset %d", offset)
+                results.append([])
+
+        return results
+
     def _run_ner(self, text):
         candidates = []
         url_spans = [(m.start(), m.end()) for m in URL_PATTERN.finditer(text)]
 
-        for chunk_offset, chunk_text in self._chunk_text(text):
-            if not chunk_text.strip():
-                continue
-            try:
-                with self._lock:
-                    results = self.ner_pipeline(chunk_text)
-            except Exception:
-                logger.exception("NER pipeline failed on chunk at offset %d", chunk_offset)
-                continue
+        chunks = [(offset, chunk) for offset, chunk in self._chunk_text(text) if chunk.strip()]
+        if not chunks:
+            return candidates
 
+        for (chunk_offset, _), results in zip(chunks, self._infer(chunks)):
             for ent in results:
                 etype = ent["entity_group"]
                 if etype not in REDACT_TYPES:

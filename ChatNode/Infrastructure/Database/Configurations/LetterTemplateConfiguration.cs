@@ -9,6 +9,8 @@ public class LetterTemplateConfiguration : IEntityTypeConfiguration<LetterTempla
     public const int MaxNameLength = 200;
     public const int MaxContentLength = 20000;
     public const int MaxFileNameLength = 300;
+    public const int MaxStorageKeyLength = 300;
+    public const int MaxPlaceholderListLength = 1000;
 
     public void Configure(EntityTypeBuilder<LetterTemplate> builder)
     {
@@ -19,6 +21,9 @@ public class LetterTemplateConfiguration : IEntityTypeConfiguration<LetterTempla
         builder.Property(x => x.Name).IsRequired().HasMaxLength(MaxNameLength);
         builder.Property(x => x.Content).IsRequired().HasMaxLength(MaxContentLength);
         builder.Property(x => x.SourceFileName).HasMaxLength(MaxFileNameLength);
+        builder.Property(x => x.FormStorageKey).HasMaxLength(MaxStorageKeyLength);
+        builder.Property(x => x.FormFileName).HasMaxLength(MaxFileNameLength);
+        builder.Property(x => x.FormPlaceholders).HasMaxLength(MaxPlaceholderListLength);
         builder.Property(x => x.CreatedAt).IsRequired();
         builder.Property(x => x.UpdatedAt).IsRequired();
 

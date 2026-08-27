@@ -22,6 +22,7 @@ public class ReviewFunctionToolsSet(
     private readonly RepeatCallGuard _guard = new();
 
     private const int MaxFindingsPerCriterion = 5;
+    private const int MaxCriteria = 25;
 
     public IReadOnlyList<IChatFunctionTool> FunctionTools =>
     [
@@ -79,7 +80,7 @@ public class ReviewFunctionToolsSet(
 
         var views = new List<ReviewCriterionView>();
 
-        foreach (var criterion in criteria)
+        foreach (var criterion in criteria.Take(MaxCriteria))
         {
             views.Add(new ReviewCriterionView(
                 criterion.Index,

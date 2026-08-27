@@ -22,12 +22,21 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
 
     public DbSet<LetterTemplate> LetterTemplates => Set<LetterTemplate>();
 
+    public DbSet<OrganizationProfile> OrganizationProfiles => Set<OrganizationProfile>();
+
+    public DbSet<Dataset> Datasets => Set<Dataset>();
+
+    public DbSet<DatasetColumn> DatasetColumns => Set<DatasetColumn>();
+
+    public DbSet<DatasetRow> DatasetRows => Set<DatasetRow>();
+
     public DbSet<StoredReview> Reviews => Set<StoredReview>();
 
     public DbSet<StoredReviewCriterion> ReviewCriteria => Set<StoredReviewCriterion>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        modelBuilder.HasPostgresExtension("vector");
         modelBuilder.ApplyConfigurationsFromAssembly(typeof(AppDbContext).Assembly);
     }
 }

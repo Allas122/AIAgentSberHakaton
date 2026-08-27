@@ -2,6 +2,8 @@ using System.Text;
 using System.Text.RegularExpressions;
 using ChatNode.Infrastructure.AI.Generated;
 using ChatNode.Infrastructure.AI.Services.Abstractions;
+using ChatNode.Infrastructure.Configuration.Options;
+using Microsoft.Extensions.Options;
 using StackExchange.Redis;
 
 namespace ChatNode.Infrastructure.AI.Services;
@@ -9,22 +11,30 @@ namespace ChatNode.Infrastructure.AI.Services;
 public class AnonymizeClient(
     IDatabase redis,
     NerService.NerServiceClient grpcClient,
+    AnonymizeThrottle throttle,
+    IOptions<AnonymizerOptions> options,
     ILogger<AnonymizeClient> logger) : IAnonymizeClient
 {
     private static readonly Regex AnonTagRegex = AnonymizationTags.Pattern;
     private static readonly TimeSpan Ttl = TimeSpan.FromHours(24);
 
+    private static readonly char[] SentenceBreaks = ['.', '!', '?', '\n', ';'];
+
     private const string SequenceField = "seq";
 
     private const char BatchSeparator = '\n';
-    private const int MaxBatchChars = 8000;
+
+    private int MaxBatchChars => Math.Max(options.Value.MaxRequestChars, 500);
 
     public async Task<string> AnonymizeAsync(string text, string sessionId, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(text)) return text;
 
-        var request = new NerRequest { Text = text };
-        var response = await grpcClient.ExtractEntitiesAsync(request, cancellationToken: ct);
+        if (text.Length > MaxBatchChars) return await AnonymizeLongAsync(text, sessionId, ct);
+
+        var response = await throttle.RunAsync(
+            async () => await grpcClient.ExtractEntitiesAsync(new NerRequest { Text = text }, cancellationToken: ct),
+            ct);
 
         if (response.Entities.Count == 0) return text;
 
@@ -66,16 +76,18 @@ public class AnonymizeClient(
         if (texts.Count == 0) return [];
 
         var result = new string[texts.Count];
+        var batches = new List<(int Start, int End)>();
         var batchStart = 0;
         var batchChars = 0;
+        var limit = MaxBatchChars;
 
         for (var i = 0; i < texts.Count; i++)
         {
             var length = texts[i].Length + 1;
 
-            if (batchChars > 0 && batchChars + length > MaxBatchChars)
+            if (batchChars > 0 && batchChars + length > limit)
             {
-                await FlushAsync(texts, result, batchStart, i, sessionId, ct);
+                batches.Add((batchStart, i));
                 batchStart = i;
                 batchChars = 0;
             }
@@ -83,9 +95,51 @@ public class AnonymizeClient(
             batchChars += length;
         }
 
-        await FlushAsync(texts, result, batchStart, texts.Count, sessionId, ct);
+        batches.Add((batchStart, texts.Count));
+
+        await Task.WhenAll(batches.Select(batch =>
+            FlushAsync(texts, result, batch.Start, batch.End, sessionId, ct)));
 
         return result;
+    }
+
+    private async Task<string> AnonymizeLongAsync(string text, string sessionId, CancellationToken ct)
+    {
+        var parts = SplitLong(text, MaxBatchChars);
+
+        logger.LogDebug(
+            "Анонимизация: фрагмент на {Chars} симв. разбит на {Parts} частей",
+            text.Length,
+            parts.Count);
+
+        var anonymized = await Task.WhenAll(parts.Select(part => AnonymizeAsync(part, sessionId, ct)));
+
+        return string.Concat(anonymized);
+    }
+
+    private static List<string> SplitLong(string text, int max)
+    {
+        var parts = new List<string>();
+        var position = 0;
+
+        while (position < text.Length)
+        {
+            var length = Math.Min(max, text.Length - position);
+
+            if (position + length < text.Length)
+            {
+                var window = text.AsSpan(position, length);
+                var breakAt = window.LastIndexOfAny(SentenceBreaks);
+
+                if (breakAt <= 0) breakAt = window.LastIndexOf(' ');
+                if (breakAt > max / 2) length = breakAt + 1;
+            }
+
+            parts.Add(text.Substring(position, length));
+            position += length;
+        }
+
+        return parts;
     }
 
     private async Task FlushAsync(

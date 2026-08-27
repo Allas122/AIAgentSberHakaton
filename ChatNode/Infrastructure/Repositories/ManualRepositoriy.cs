@@ -7,15 +7,15 @@ using ChatNode.Infrastructure.Database.Entities;
 using ChatNode.Infrastructure.Mappers;
 using Domain.Entities;
 using Domain.Repositories;
+using Domain.ValueTypes;
 using Microsoft.EntityFrameworkCore;
-using StackExchange.Redis;
+using Pgvector;
+using Pgvector.EntityFrameworkCore;
 
 namespace ChatNode.Infrastructure.Repositories;
 
 public class ManualRepository(
-    IDatabase database,
     AppDbContext context,
-    ManualCache cache,
     IEmbeddingClient embeddingClient,
     ILogger<ManualRepository> logger
 ) : IManualRepository
@@ -36,6 +36,7 @@ public class ManualRepository(
                 Id = manualId,
                 Title = manual.Title,
                 Navigation = manual.Navigation,
+                Scope = manual.Scope,
                 Stage = manual.Stage,
                 TotalChunks = manual.TotalChunks,
                 ProcessedChunks = manual.ProcessedChunks,
@@ -97,13 +98,7 @@ public class ManualRepository(
 
     public async Task DeleteManualAsync(Guid id)
     {
-        var partIds = await context.ManualParts
-            .Where(x => x.ManualId == id)
-            .Select(x => x.Id)
-            .ToListAsync();
-
         await context.Manuals.Where(x => x.Id == id).ExecuteDeleteAsync();
-        await cache.EvictAsync(id, partIds);
     }
 
     public async Task<Guid> CreateManualPartAsync(ManualPart part)
@@ -121,13 +116,12 @@ public class ManualRepository(
             Navigation = part.Navigation,
             Content = part.Content,
             Embedding = VectorToBytes(embedding),
+            EmbeddingVector = ToVector(embedding),
             CreatedAt = DateTimeOffset.UtcNow
         };
 
         context.ManualParts.Add(stored);
         await context.SaveChangesAsync();
-
-        await cache.PutAsync(stored);
 
         return stored.Id;
     }
@@ -146,12 +140,8 @@ public class ManualRepository(
         var stored = await context.ManualParts.FirstOrDefaultAsync(x => x.Id == id);
         if (stored is null) return;
 
-        var manualId = stored.ManualId;
-
         context.ManualParts.Remove(stored);
         await context.SaveChangesAsync();
-
-        await cache.EvictPartAsync(manualId, id);
     }
 
     public async Task<IEnumerable<ManualPart>> KnnSearchManualPartAsync(
@@ -159,36 +149,33 @@ public class ManualRepository(
         int limit,
         Guid? manualId = null)
     {
-        await EnsureWarmAsync(manualId);
-
         var embedding = await embeddingClient.GetEmbeddingAsync(searchTerm);
-        var vectorBytes = VectorToBytes(embedding);
+        var query = ToVector(embedding);
 
-        var filter = manualId.HasValue
-            ? $"@manualId:{{{EscapeTag(manualId.Value)}}}"
-            : "*";
+        var parts = context.ManualParts.AsNoTracking().Where(part => part.EmbeddingVector != null);
 
-        try
-        {
-            var results = await database.ExecuteAsync("FT.SEARCH", ManualCache.IndexName,
-                $"{filter}=>[KNN {limit} @embedding $vec AS score]",
-                "PARAMS", "2", "vec", vectorBytes,
-                "LIMIT", "0", limit.ToString(),
-                "DIALECT", "2");
+        if (manualId.HasValue) parts = parts.Where(part => part.ManualId == manualId.Value);
 
-            return ParseSearchResponse(results);
-        }
-        catch (RedisServerException ex)
-        {
-            logger.LogError(ex, "Поиск по методичке {ManualId} не выполнен", manualId);
-            return [];
-        }
+        var found = await parts
+            .OrderBy(part => part.EmbeddingVector!.CosineDistance(query))
+            .Take(limit)
+            .ToListAsync();
+
+        logger.LogDebug(
+            "Методичка {ManualId}: KNN по pgvector -> {Found} частей",
+            manualId,
+            found.Count);
+
+        return found.Select(part => part.MapToManualPart()).ToList();
     }
 
-    public async Task<IReadOnlyList<Manual>> GetManualsAsync()
+    public async Task<IReadOnlyList<Manual>> GetManualsAsync(ManualScope? scope = null)
     {
-        var stored = await context.Manuals
-            .AsNoTracking()
+        var manuals = context.Manuals.AsNoTracking();
+
+        if (scope.HasValue) manuals = manuals.Where(x => x.Scope == scope.Value);
+
+        var stored = await manuals
             .OrderByDescending(x => x.CreatedAt)
             .ToListAsync();
 
@@ -202,66 +189,7 @@ public class ManualRepository(
             .Select(x => x.Id)
             .ToListAsync();
 
-    private async Task EnsureWarmAsync(Guid? manualId)
-    {
-        if (manualId is null)
-        {
-            var all = await context.Manuals.AsNoTracking().Select(x => x.Id).ToListAsync();
-            foreach (var id in all) await EnsureWarmAsync(id);
-            return;
-        }
-
-        if (await cache.IsWarmAsync(manualId.Value)) return;
-
-        var parts = await context.ManualParts
-            .AsNoTracking()
-            .Where(x => x.ManualId == manualId.Value)
-            .ToListAsync();
-
-        if (parts.Count == 0) return;
-
-        await cache.WarmAsync(manualId.Value, parts);
-    }
-
-    private static string EscapeTag(Guid value) => value.ToString().Replace("-", "\\-");
-
     private static byte[] VectorToBytes(IReadOnlyList<double> vector) => EmbeddingVector.ToBytes(vector);
 
-    private static IEnumerable<ManualPart> ParseSearchResponse(RedisResult result)
-    {
-        var list = new List<ManualPart>();
-        var rows = (RedisResult[])result!;
-
-        if (rows.Length <= 1) return list;
-
-        for (var i = 1; i < rows.Length; i += 2)
-        {
-            var fields = (RedisResult[])rows[i + 1]!;
-            var dict = new Dictionary<string, string>();
-
-            for (var j = 0; j < fields.Length; j += 2)
-            {
-                dict[fields[j].ToString()!] = fields[j + 1].ToString()!;
-            }
-
-            var part = MapToPart(dict);
-            if (part is not null) list.Add(part);
-        }
-
-        return list;
-    }
-
-    private static ManualPart? MapToPart(Dictionary<string, string> dict)
-    {
-        if (!Guid.TryParse(dict.GetValueOrDefault("partId"), out var partId)) return null;
-        if (!Guid.TryParse(dict.GetValueOrDefault("manualId"), out var manualId)) return null;
-
-        return new ManualPart(
-            partId,
-            manualId,
-            dict.GetValueOrDefault("title", "Без названия"),
-            Navigation: dict.GetValueOrDefault("navigation", ""),
-            Content: dict.GetValueOrDefault("content", "")
-        );
-    }
+    private static Vector ToVector(IReadOnlyList<double> vector) => new(EmbeddingVector.ToFloats(vector));
 }

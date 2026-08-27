@@ -1,6 +1,7 @@
 using ChatNode.Application.DTO;
 using ChatNode.Infrastructure.AI.Agents;
 using ChatNode.Infrastructure.Manuals;
+using Domain.ValueTypes;
 
 namespace ChatNode.Application.Services.Abstractons;
 
@@ -11,6 +12,7 @@ public interface IManualService
         Guid ownerId,
         Stream fileStream,
         string fileName,
+        ManualScope scope,
         CancellationToken cancellationToken);
 
     public Task<ManualParseReport> ParseManualAsync(
@@ -18,7 +20,7 @@ public interface IManualService
         Func<ManualParseProgress, Task> onProgress,
         CancellationToken cancellationToken);
 
-    public Task<IEnumerable<ManualDto>> GetManuals();
+    public Task<IEnumerable<ManualDto>> GetManuals(bool includeStaff);
 
-    public Task<ManualDto?> GetManual(Guid id);
+    public Task<ManualDto?> GetManual(Guid id, bool includeStaff);
 }

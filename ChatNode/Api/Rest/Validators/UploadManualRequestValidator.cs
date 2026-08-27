@@ -23,17 +23,18 @@ public class UploadManualRequestValidator : AbstractValidator<UploadManualReques
             : limits.MaxFileSizeBytes;
 
         RuleFor(x => x.Title)
-            .Length(4, 500).WithMessage("Название методички может быть от 4 до 500 символов");
+            .Length(4, 500).WithMessage("Название документа может быть от 4 до 500 символов");
 
         RuleFor(x => x.File)
             .NotNull().WithMessage("Файл обязателен")
-            .AllowedExtensions([".MD", ".md"]).WithMessage("Файл должен быть в .md формате.")
+            .AllowedExtensions([".md", ".txt", ".docx", ".pdf", ".csv", ".xlsx"])
+            .WithMessage("Документ принимается в форматах .md, .txt, .docx, .pdf, .csv, .xlsx.")
             .Must(file => file is null || file.Length <= Limit())
             .WithMessage(_ => IsStaff(httpContextAccessor.HttpContext?.User)
-                ? $"Методичка не должна быть больше {Human(limits.StaffMaxFileSizeBytes)}."
-                : $"Методичка не должна быть больше {Human(limits.MaxFileSizeBytes)}. " +
+                ? $"Документ не должен быть больше {Human(limits.StaffMaxFileSizeBytes)}."
+                : $"Документ не должен быть больше {Human(limits.MaxFileSizeBytes)}. " +
                   "Разбор большого документа занимает минуты и расходует лимиты модели — " +
-                  $"для положений до {Human(limits.StaffMaxFileSizeBytes)} войдите под служебным аккаунтом.");
+                  $"для документов до {Human(limits.StaffMaxFileSizeBytes)} войдите под служебным аккаунтом.");
     }
 
     private static bool IsStaff(ClaimsPrincipal? user) =>

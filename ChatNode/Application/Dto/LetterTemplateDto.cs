@@ -6,7 +6,10 @@ public record LetterTemplateDto(
     string Content,
     string? SourceFileName,
     DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    bool IsPreset = false,
+    bool HasForm = false,
+    IReadOnlyList<string>? Placeholders = null);
 
 public record CreateLetterTemplateDto(string Name, string? Content, Stream? FileStream, string? FileName);
 

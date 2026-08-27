@@ -7,9 +7,10 @@ public record GigaChatOptions
     public string BaseUrl { get; init; } = "https://gigachat.devices.sberbank.ru/api/v1/";
     public string EmbeddingModel { get; init; } = "Embeddings";
     public int EmbeddingDim { get; init; } = 1024;
-    public string ManualParserAgentModel {get; init; }
-    public string ConsultingAgentModel {get; init; }
-    public string ApplicationReviewAgentModel {get; init; }
+    public string ManualParserAgentModel { get; init; } = "GigaChat-2-Max";
+    public string ConsultingAgentModel { get; init; } = "GigaChat-2-Pro";
+    public string ApplicationReviewAgentModel { get; init; } = "GigaChat-2-Max";
+    public string LetterAgentModel { get; init; } = "GigaChat-2-Pro";
     public int ApplicationSectionChars { get; init; } = 4000;
     public int ApplicationSectionToolCalls { get; init; } = 12;
     public double PinDuplicateDistance { get; init; } = 0.15;

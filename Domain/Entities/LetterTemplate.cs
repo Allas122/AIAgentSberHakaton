@@ -7,6 +7,10 @@ public record LetterTemplate
     public string Name { get; set; } = string.Empty;
     public string Content { get; set; } = string.Empty;
     public string? SourceFileName { get; set; }
+    public string? FormStorageKey { get; set; }
+    public string? FormFileName { get; set; }
+    public long? FormSizeBytes { get; set; }
+    public string? FormPlaceholders { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset UpdatedAt { get; set; }
 }

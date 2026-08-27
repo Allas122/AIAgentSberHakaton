@@ -146,6 +146,94 @@ public class DocxTextExtractor : IDocxTextExtractor
         return lines;
     }
 
+    public string ExtractMarkdown(Stream docxStream)
+    {
+        using var wordDoc = WordprocessingDocument.Open(docxStream, false);
+
+        var body = wordDoc.MainDocumentPart?.Document?.Body;
+        if (body is null) throw new InvalidOperationException("Документ не содержит тела — файл повреждён или это не docx.");
+
+        var markdown = new StringBuilder();
+
+        void Walk(OpenXmlElement container)
+        {
+            foreach (var element in container.ChildElements)
+            {
+                switch (element)
+                {
+                    case Paragraph paragraph:
+                        var text = Normalize(paragraph.InnerText);
+                        if (text.Length == 0) break;
+
+                        var level = GetHeadingLevel(paragraph, text);
+
+                        if (level is null)
+                        {
+                            markdown.AppendLine(text);
+                            markdown.AppendLine();
+                            break;
+                        }
+
+                        var depth = Math.Clamp(level.Value == UnknownHeadingLevel ? 2 : level.Value, 1, 6);
+
+                        markdown.AppendLine($"{new string('#', depth)} {text}");
+                        markdown.AppendLine();
+                        break;
+
+                    case Table table:
+                        var rendered = RenderMarkdownTable(table);
+                        if (rendered.Length > 0)
+                        {
+                            markdown.AppendLine(rendered);
+                            markdown.AppendLine();
+                        }
+
+                        break;
+
+                    case AlternateContent alternate:
+                        var branch = (OpenXmlElement?)alternate.GetFirstChild<AlternateContentChoice>()
+                                     ?? alternate.GetFirstChild<AlternateContentFallback>();
+                        if (branch is not null) Walk(branch);
+                        break;
+
+                    default:
+                        if (element.HasChildren) Walk(element);
+                        break;
+                }
+            }
+        }
+
+        Walk(body);
+
+        return markdown.ToString().Trim();
+    }
+
+    private static string RenderMarkdownTable(Table table)
+    {
+        var rows = Enumerate<TableRow>(table)
+            .Select(row => Enumerate<TableCell>(row).Select(cell => Normalize(cell.InnerText)).ToList())
+            .Where(cells => cells.Count > 0 && !cells.All(string.IsNullOrEmpty))
+            .ToList();
+
+        if (rows.Count == 0) return string.Empty;
+
+        var width = rows.Max(cells => cells.Count);
+        var sb = new StringBuilder();
+
+        for (var i = 0; i < rows.Count; i++)
+        {
+            var cells = rows[i];
+            var padded = Enumerable.Range(0, width)
+                .Select(column => column < cells.Count ? cells[column] : string.Empty);
+
+            sb.AppendLine($"| {string.Join(" | ", padded)} |");
+
+            if (i == 0) sb.AppendLine($"|{string.Concat(Enumerable.Repeat(" --- |", width))}");
+        }
+
+        return sb.ToString().TrimEnd();
+    }
+
     private static int? GetHeadingLevel(Paragraph paragraph, string text)
     {
         var properties = paragraph.ParagraphProperties;

@@ -6,6 +6,7 @@ public class ManualDto
 {
     public Guid Id { get; set; }
     public string Title { get; set; }
+    public ManualScope Scope { get; set; }
     public ManualStage Stage { get; set; }
     public int TotalChunks { get; set; }
     public int ProcessedChunks { get; set; }

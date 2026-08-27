@@ -75,6 +75,7 @@ public static class AiConfigurationExtension
 
         services.AddSingleton(sp => new NerService.NerServiceClient(sp.GetRequiredService<GrpcChannel>()));
 
+        services.AddSingleton<AnonymizeThrottle>();
         services.AddScoped<IAnonymizeClient, AnonymizeClient>();
     }
 }

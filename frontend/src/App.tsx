@@ -9,6 +9,7 @@ import { FilesPanel } from './components/FilesPanel';
 import { LettersPanel } from './components/LettersPanel';
 import { LoginModal } from './components/LoginModal';
 import { ManualModal } from './components/ManualModal';
+import { OrganizationPanel } from './components/OrganizationPanel';
 import { Sidebar } from './components/Sidebar';
 import { Toasts } from './components/Toasts';
 import { Topbar } from './components/Topbar';
@@ -100,6 +101,7 @@ export default function App() {
         activeChatId={chat.activeChatId}
         manuals={chat.manuals}
         manualId={chat.manualId}
+        staffChat={chat.staffChat}
         identity={chat.identity}
         view={section}
         theme={theme}
@@ -189,6 +191,15 @@ export default function App() {
             element={
               <RequireRole identity={chat.identity} allow={isStaff}>
                 <UsagePanel notify={push} />
+              </RequireRole>
+            }
+          />
+
+          <Route
+            path="/organization"
+            element={
+              <RequireRole identity={chat.identity} allow={isRector}>
+                <OrganizationPanel notify={push} />
               </RequireRole>
             }
           />

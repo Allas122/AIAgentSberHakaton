@@ -216,7 +216,8 @@ public class DocumentService(
 
     private static bool IsStaff(UserRole role) => StaffRoles.Contains(role);
 
-    private static bool HasPersonalData(StoredDocumentKind kind) => kind == StoredDocumentKind.GrantApplication;
+    private static bool HasPersonalData(StoredDocumentKind kind) =>
+        kind is StoredDocumentKind.GrantApplication or StoredDocumentKind.GeneratedDocument;
 
     private static string FileNameOf(StoredDocument document)
     {

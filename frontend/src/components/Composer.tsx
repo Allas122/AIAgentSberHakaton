@@ -16,7 +16,8 @@ interface Props {
   onSend: (text: string, file: File | null) => void;
 }
 
-const ACCEPT = '.docx';
+const ACCEPT = '.docx,.pdf';
+const ALLOWED = ['.docx', '.pdf'];
 const MAX_MB = 50;
 const MAX_CONTENT = 5000;
 
@@ -53,8 +54,8 @@ export function Composer({
 
   const attach = (candidate: File | undefined | null) => {
     if (!candidate) return;
-    if (!candidate.name.toLowerCase().endsWith('.docx')) {
-      setError('Заявку нужно приложить в формате .docx');
+    if (!ALLOWED.some((extension) => candidate.name.toLowerCase().endsWith(extension))) {
+      setError('Заявку нужно приложить в формате .docx или .pdf');
       return;
     }
     if (candidate.size > MAX_MB * 1024 * 1024) {
@@ -148,7 +149,7 @@ export function Composer({
             className="icon-btn"
             onClick={() => inputRef.current?.click()}
             disabled={disabled || busy}
-            title="Приложить заявку (.docx)"
+            title="Приложить заявку (.docx или .pdf)"
             aria-label="Приложить заявку"
           >
             <IconClip />

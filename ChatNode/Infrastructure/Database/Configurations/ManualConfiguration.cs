@@ -17,7 +17,10 @@ public class ManualConfiguration : IEntityTypeConfiguration<StoredManual>
 
         builder.Property(x => x.Title).IsRequired().HasMaxLength(MaxTitleLength);
         builder.Property(x => x.Navigation).IsRequired();
+        builder.Property(x => x.Scope).IsRequired().HasConversion<string>().HasMaxLength(16);
         builder.Property(x => x.Stage).IsRequired().HasConversion<string>().HasMaxLength(32);
+
+        builder.HasIndex(x => x.Scope);
         builder.Property(x => x.TotalChunks).IsRequired();
         builder.Property(x => x.ProcessedChunks).IsRequired();
         builder.Property(x => x.FailedChunks).IsRequired();
@@ -34,6 +37,8 @@ public class ManualConfiguration : IEntityTypeConfiguration<StoredManual>
 
 public class ManualPartConfiguration : IEntityTypeConfiguration<StoredManualPart>
 {
+    public const int EmbeddingDimensions = 1024;
+
     public void Configure(EntityTypeBuilder<StoredManualPart> builder)
     {
         builder.ToTable("manual_parts");
@@ -44,6 +49,7 @@ public class ManualPartConfiguration : IEntityTypeConfiguration<StoredManualPart
         builder.Property(x => x.Navigation).IsRequired();
         builder.Property(x => x.Content).IsRequired();
         builder.Property(x => x.Embedding).IsRequired().HasColumnType("bytea");
+        builder.Property(x => x.EmbeddingVector).HasColumnType($"vector({EmbeddingDimensions})");
         builder.Property(x => x.CreatedAt).IsRequired();
 
         builder.HasIndex(x => x.ManualId);

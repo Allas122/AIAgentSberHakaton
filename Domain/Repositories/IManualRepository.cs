@@ -1,4 +1,5 @@
 ﻿using Domain.Entities;
+using Domain.ValueTypes;
 
 namespace Domain.Repositories;
 
@@ -16,5 +17,5 @@ public interface IManualRepository
 
     public Task<IEnumerable<ManualPart>> KnnSearchManualPartAsync(string searchTerm, int limit, Guid? manualId = null);
     public Task<IEnumerable<Guid>> GetManualIdsAsync();
-    public Task<IReadOnlyList<Manual>> GetManualsAsync();
+    public Task<IReadOnlyList<Manual>> GetManualsAsync(ManualScope? scope = null);
 }

@@ -15,7 +15,8 @@ public static class DatabaseInjector
                 "Постоянные данные (поручения, аккаунты, методички) хранятся в PostgreSQL, без неё сервис не работает.");
         }
 
-        services.AddDbContext<AppDbContext>(options => options.UseNpgsql(connectionString));
+        services.AddDbContext<AppDbContext>(
+            options => options.UseNpgsql(connectionString, npgsql => npgsql.UseVector()));
         services.AddHostedService<DatabaseMigrator>();
 
         return services;

@@ -9,8 +9,12 @@ import type {
   DeleteDocumentResponse,
   DocumentList,
   Identity,
+  LetterAddressee,
   LetterReply,
+  LetterRequisites,
   ManualData,
+  ManualScope,
+  OrganizationProfile,
   TicketResponse,
   TokenPair,
   UploadFileResponse,
@@ -18,7 +22,7 @@ import type {
   UsageRecordPage,
   UsageReport,
 } from './types';
-import { decodeIdentity, normalizeManual } from './types';
+import { decodeIdentity, normalizeManual, PersonGender } from './types';
 
 const BASE = (import.meta.env.VITE_API_BASE ?? '').replace(/\/$/, '');
 const STORAGE_KEY = 'chatnode.auth';
@@ -214,6 +218,20 @@ function fileNameFrom(header: string | null): string | null {
   return plain ? plain[1] : null;
 }
 
+async function saveBlob(res: Response, fallback: string): Promise<void> {
+  const blob = await res.blob();
+  const name = fileNameFrom(res.headers.get('content-disposition')) ?? fallback;
+
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = name;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
 export const api = {
   async wsTicket(): Promise<string> {
     const data = await json<TicketResponse>('/api/auth/ws-ticket');
@@ -239,6 +257,8 @@ export const api = {
     letter: string,
     intent: string,
     templateId?: string | null,
+    addressee?: LetterAddressee,
+    requisites?: LetterRequisites,
     signal?: AbortSignal,
   ): Promise<LetterReply> {
     const form = new FormData();
@@ -247,9 +267,46 @@ export const api = {
     if (intent.trim()) form.append('Intent', intent.trim());
     if (templateId) form.append('TemplateId', templateId);
 
-    return json<LetterReply>('/api/letters/reply', {
+    if (addressee) {
+      if (addressee.name.trim()) form.append('AddresseeName', addressee.name.trim());
+      if (addressee.position.trim()) form.append('AddresseePosition', addressee.position.trim());
+      if (addressee.salutation.trim()) form.append('AddresseeSalutation', addressee.salutation.trim());
+      if (addressee.gender !== PersonGender.Unknown) form.append('AddresseeGender', addressee.gender);
+    }
+
+    if (requisites) {
+      if (requisites.outgoingNumber.trim()) form.append('OutgoingNumber', requisites.outgoingNumber.trim());
+      if (requisites.outgoingDate.trim()) form.append('OutgoingDate', requisites.outgoingDate.trim());
+      if (requisites.replyToNumber.trim()) form.append('ReplyToNumber', requisites.replyToNumber.trim());
+      if (requisites.replyToDate.trim()) form.append('ReplyToDate', requisites.replyToDate.trim());
+    }
+
+    const reply = await json<LetterReply>('/api/letters/reply', {
       method: 'POST',
       body: form,
+      signal,
+    });
+
+    return {
+      ...reply,
+      warnings: Array.isArray(reply.warnings) ? reply.warnings : [],
+      documentId: reply.documentId ?? null,
+      fileName: reply.fileName ?? null,
+    };
+  },
+
+  async organizationProfile(signal?: AbortSignal): Promise<OrganizationProfile> {
+    return json<OrganizationProfile>('/api/organization-profile', { signal });
+  },
+
+  async saveOrganizationProfile(
+    profile: OrganizationProfile,
+    signal?: AbortSignal,
+  ): Promise<OrganizationProfile> {
+    return json<OrganizationProfile>('/api/organization-profile', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(profile),
       signal,
     });
   },
@@ -430,18 +487,12 @@ export const api = {
 
   async downloadDocument(documentId: string, signal?: AbortSignal): Promise<void> {
     const res = await request(`/api/documents/${documentId}/content`, { signal });
+    await saveBlob(res, 'document');
+  },
 
-    const blob = await res.blob();
-    const name = fileNameFrom(res.headers.get('content-disposition')) ?? 'document';
-
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = name;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    URL.revokeObjectURL(url);
+  async downloadTemplatePreview(templateId: string, signal?: AbortSignal): Promise<void> {
+    const res = await request(`/api/letter-templates/${templateId}/preview.docx`, { signal });
+    await saveBlob(res, 'proverka-blanka.docx');
   },
 
   async deleteChat(chatId: string, signal?: AbortSignal): Promise<void> {
@@ -454,27 +505,19 @@ export const api = {
       { signal },
     );
 
-    const blob = await res.blob();
-    const name = fileNameFrom(res.headers.get('content-disposition')) ?? 'razbor-zayavki.docx';
-
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = name;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    URL.revokeObjectURL(url);
+    await saveBlob(res, 'razbor-zayavki.docx');
   },
 
   async uploadManual(
     title: string,
     file: File,
+    scope: ManualScope,
     signal?: AbortSignal,
   ): Promise<UploadManualResponse> {
     const form = new FormData();
     form.append('Title', title);
     form.append('File', file);
+    form.append('Scope', scope);
     return json<UploadManualResponse>('/api/manuals/upload', {
       method: 'POST',
       body: form,

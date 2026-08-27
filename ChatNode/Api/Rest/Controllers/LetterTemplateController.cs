@@ -57,6 +57,25 @@ public class LetterTemplateController(ILetterTemplateService templateService) : 
         return NoContent();
     }
 
+    [HttpGet("{templateId:guid}/preview.docx")]
+    public async Task<IActionResult> Preview(Guid templateId, CancellationToken ct)
+    {
+        var file = await templateService.PreviewAsync(HttpContext.User.GetUserId(), templateId, ct);
+
+        return File(
+            file.Content,
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            file.FileName);
+    }
+
     private static LetterTemplateResponse Map(LetterTemplateDto dto) =>
-        new(dto.Id, dto.Name, dto.Content, dto.SourceFileName, dto.CreatedAt, dto.UpdatedAt);
+        new(dto.Id,
+            dto.Name,
+            dto.Content,
+            dto.SourceFileName,
+            dto.CreatedAt,
+            dto.UpdatedAt,
+            dto.IsPreset,
+            dto.HasForm,
+            dto.Placeholders ?? []);
 }

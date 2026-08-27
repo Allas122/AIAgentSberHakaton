@@ -19,7 +19,7 @@ services:
       - grants
 
   postgres:
-    image: postgres:17-alpine
+    image: pgvector/pgvector:pg17
     container_name: ${COMPOSE_PROJECT_NAME:-aiagent-sber}-postgres
     restart: unless-stopped
     ports:
@@ -97,6 +97,7 @@ services:
       MAX_TEXT_LENGTH: ${MAX_TEXT_LENGTH:-20000}
       CHUNK_MAX_TOKENS: ${CHUNK_MAX_TOKENS:-400}
       CHUNK_OVERLAP_TOKENS: ${CHUNK_OVERLAP_TOKENS:-50}
+      NER_BATCH_SIZE: ${NER_BATCH_SIZE:-8}
       GRPC_MAX_WORKERS: ${GRPC_MAX_WORKERS:-10}
       GRPC_MAX_MESSAGE_MB: ${GRPC_MAX_MESSAGE_MB:-50}
     ports:
@@ -159,8 +160,12 @@ services:
 
       CachePolicy__ManualPartsSeconds: ${CACHE_MANUAL_PARTS_SECONDS:-86400}
 
+      Anonymizer__MaxParallelRequests: ${ANONYMIZER_MAX_PARALLEL:-4}
+      Anonymizer__MaxRequestChars: ${ANONYMIZER_MAX_REQUEST_CHARS:-8000}
+
       ManualUpload__MaxFileSizeBytes: ${MANUAL_MAX_FILE_SIZE_BYTES:-262144}
       ManualUpload__StaffMaxFileSizeBytes: ${MANUAL_STAFF_MAX_FILE_SIZE_BYTES:-10485760}
+      ManualUpload__MaxTextChars: ${MANUAL_MAX_TEXT_CHARS:-400000}
 
       WebSocket__TicketExpirationInSeconds: ${WS_TICKET_EXPIRATION_SECONDS:-30}
 
@@ -190,6 +195,7 @@ services:
       GigaChat__ManualParserAgentModel: ${GIGACHAT_MANUAL_PARSER_MODEL:-GigaChat-2-Max}
       GigaChat__ConsultingAgentModel: ${GIGACHAT_CONSULTING_MODEL:-GigaChat-2-Pro}
       GigaChat__ApplicationReviewAgentModel: ${GIGACHAT_REVIEW_MODEL:-GigaChat-2-Max}
+      GigaChat__LetterAgentModel: ${GIGACHAT_LETTER_MODEL:-GigaChat-2-Pro}
       GigaChat__EmbeddingModel: ${GIGACHAT_EMBEDDING_MODEL:-Embeddings}
       GigaChat__EmbeddingDim: ${GIGACHAT_EMBEDDING_DIM:-1024}
       GigaChat__ApplicationSectionChars: ${GIGACHAT_SECTION_CHARS:-4000}

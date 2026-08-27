@@ -38,6 +38,11 @@ public record AssignmentPageDto(IReadOnlyList<AssignmentDto> Items, int Total);
 
 public record LetterAssignmentDto(Guid Id, string Title, string? Assignee, string? DueDate, string Status);
 
-public record LetterReplyDto(string Reply, IReadOnlyList<LetterAssignmentDto> Assignments);
+public record LetterReplyDto(
+    string Reply,
+    IReadOnlyList<LetterAssignmentDto> Assignments,
+    IReadOnlyList<string> Warnings,
+    Guid? DocumentId,
+    string? FileName);
 
 public record DocumentFileDto(byte[] Content, string FileName);

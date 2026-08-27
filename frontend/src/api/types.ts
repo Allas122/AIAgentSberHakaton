@@ -65,9 +65,17 @@ export const MANUAL_STAGE_LABELS: Record<string, string> = {
   Failed: 'разбор не удался',
 };
 
+export const ManualScope = {
+  Public: 'Public',
+  Staff: 'Staff',
+} as const;
+
+export type ManualScope = (typeof ManualScope)[keyof typeof ManualScope];
+
 export interface ManualData {
   id: string;
   title: string;
+  scope: ManualScope;
   stage: ManualStage;
   totalChunks: number;
   processedChunks: number;
@@ -293,7 +301,78 @@ export interface LetterTemplate {
   sourceFileName: string | null;
   createdAt: string;
   updatedAt: string;
+  isPreset: boolean;
+  hasForm: boolean;
+  placeholders: string[];
 }
+
+export const PersonGender = {
+  Unknown: 'Unknown',
+  Male: 'Male',
+  Female: 'Female',
+} as const;
+
+export type PersonGender = (typeof PersonGender)[keyof typeof PersonGender];
+
+export interface LetterAddressee {
+  name: string;
+  position: string;
+  salutation: string;
+  gender: PersonGender;
+}
+
+export const EMPTY_ADDRESSEE: LetterAddressee = {
+  name: '',
+  position: '',
+  salutation: '',
+  gender: PersonGender.Unknown,
+};
+
+export interface OrganizationProfile {
+  fullName: string;
+  shortName: string;
+  address: string;
+  phone: string;
+  fax: string;
+  email: string;
+  website: string;
+  okpo: string;
+  ogrn: string;
+  inn: string;
+  kpp: string;
+  signerPosition: string;
+  signerName: string;
+  contactName: string;
+  contactPosition: string;
+  contactPhone: string;
+  contactEmail: string;
+  executorName: string;
+  executorPhone: string;
+  updatedAt: string | null;
+}
+
+export const EMPTY_ORGANIZATION_PROFILE: OrganizationProfile = {
+  fullName: '',
+  shortName: '',
+  address: '',
+  phone: '',
+  fax: '',
+  email: '',
+  website: '',
+  okpo: '',
+  ogrn: '',
+  inn: '',
+  kpp: '',
+  signerPosition: '',
+  signerName: '',
+  contactName: '',
+  contactPosition: '',
+  contactPhone: '',
+  contactEmail: '',
+  executorName: '',
+  executorPhone: '',
+  updatedAt: null,
+};
 
 export interface Account {
   id: string;
@@ -367,7 +446,24 @@ export interface UsageReport {
 export interface LetterReply {
   reply: string;
   assignments: ComposedAssignment[];
+  warnings: string[];
+  documentId: string | null;
+  fileName: string | null;
 }
+
+export interface LetterRequisites {
+  outgoingNumber: string;
+  outgoingDate: string;
+  replyToNumber: string;
+  replyToDate: string;
+}
+
+export const EMPTY_REQUISITES: LetterRequisites = {
+  outgoingNumber: '',
+  outgoingDate: '',
+  replyToNumber: '',
+  replyToDate: '',
+};
 
 export const ContestKind = {
   Individual: 'Individual',
@@ -456,6 +552,7 @@ export function normalizeManual(raw: unknown): ManualData {
   return {
     id: pick<string>(raw, 'id') ?? '',
     title: pick<string>(raw, 'title') || 'Методичка',
+    scope: (pick<string>(raw, 'scope') as ManualScope) ?? ManualScope.Public,
     stage: (pick<string>(raw, 'stage') as ManualStage) ?? 'Ready',
     totalChunks: pick<number>(raw, 'totalChunks') ?? 0,
     processedChunks: pick<number>(raw, 'processedChunks') ?? 0,

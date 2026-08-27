@@ -14,6 +14,7 @@ public static class ConfigurationInjector
         services.Configure<S3Options>(configuration.GetSection("S3"));
         services.Configure<ManualUploadOptions>(configuration.GetSection("ManualUpload"));
         services.Configure<CachePolicyOption>(configuration.GetSection("CachePolicy"));
+        services.Configure<AnonymizerOptions>(configuration.GetSection("Anonymizer"));
         return services;
     }
 }

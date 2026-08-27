@@ -4,6 +4,7 @@ public class ManualData
 {
     public Guid Id { get; set; }
     public string Title { get; set; }
+    public string Scope { get; set; }
     public string Stage { get; set; }
     public int TotalChunks { get; set; }
     public int ProcessedChunks { get; set; }

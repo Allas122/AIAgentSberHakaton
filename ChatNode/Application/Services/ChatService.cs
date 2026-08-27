@@ -26,6 +26,7 @@ public class ChatService(
     AgentFactory agentFactory,
     IDocxAnonymizer docxAnonymizer,
     IDocxTextExtractor docxTextExtractor,
+    IPdfTextExtractor pdfTextExtractor,
     IAnonymizeClient anonymizeClient,
     IFileStorage fileStorage,
     IDocxWriter docxWriter,
@@ -56,6 +57,9 @@ public class ChatService(
             return [];
         }
     }
+
+    public const int MaxPageSize = 100;
+    public const int DefaultPageSize = 10;
 
     private const int KeepResultAttempts = 4;
 
@@ -163,7 +167,7 @@ public class ChatService(
     public async Task<List<MessageDisplayDto>> GetMessagesAsync(Guid chatId,Guid userId, int limit, string? lastMessageId)
     {
         await  TryCheck(chatId, userId);
-        var messages = await chatRepository.GetMessagesAsync(chatId, limit, lastMessageId);
+        var messages = await chatRepository.GetMessagesAsync(chatId, Page(limit), lastMessageId);
 
         var reviewsByDocument = await ReviewMessageIdsAsync(messages);
 
@@ -233,8 +237,10 @@ public class ChatService(
 
         if (chat.Kind != ChatKind.Staff && manualId is null)
         {
-            throw new InvalidRequestException("Выберите методичку — по ней агент сверяет заявку.");
+            throw new InvalidRequestException("Выберите документ — по нему агент отвечает и сверяет заявку.");
         }
+
+        if (manualId is { } selected) await EnsureManualAllowedAsync(selected, chat.Kind);
 
         var sessionId = chatId.ToString();
 
@@ -276,9 +282,51 @@ public class ChatService(
     {
         if (kind == ChatKind.Staff) await DenyNotStaffAsync(userId);
 
-        return (await chatRepository.GetUserChatsAsync(userId, limit, lastChatId, kind))
+        return (await chatRepository.GetUserChatsAsync(userId, Page(limit), lastChatId, kind))
             .Select(c => c.MapToChatDto())
             .ToList();
+    }
+
+    private static int Page(int limit) => limit <= 0 ? DefaultPageSize : Math.Min(limit, MaxPageSize);
+
+    private static bool IsPdf(string? fileName) =>
+        Path.GetExtension(fileName ?? string.Empty).Equals(".pdf", StringComparison.OrdinalIgnoreCase);
+
+    private (IReadOnlyList<ApplicationSectionDto> Sections, IReadOnlyList<string> Lines) ReadDocxApplication(
+        byte[] anonymizedDocx)
+    {
+        using var stream = new MemoryStream(anonymizedDocx, writable: false);
+
+        var sections = docxTextExtractor.ExtractSections(stream);
+
+        stream.Position = 0;
+
+        return (sections, docxTextExtractor.ExtractLines(stream));
+    }
+
+    private async Task<(IReadOnlyList<ApplicationSectionDto> Sections, IReadOnlyList<string> Lines)>
+        ReadPdfApplicationAsync(Stream stored, string sessionId, CancellationToken ct)
+    {
+        var lines = pdfTextExtractor.ExtractLines(stored);
+
+        if (lines.Count == 0) return ([], []);
+
+        var anonymized = await anonymizeClient.AnonymizeBatchAsync(lines, sessionId, ct);
+
+        return (PlainTextSections.Parse(anonymized), anonymized);
+    }
+
+    private async Task<Manual> EnsureManualAllowedAsync(Guid manualId, ChatKind kind)
+    {
+        var manual = await manualRepository.GetManualAsync(manualId)
+                     ?? throw new NotFoundException("Документ не найден — отвечать и сверять заявку не по чему.");
+
+        if (manual.Scope == ManualScope.Staff && kind != ChatKind.Staff)
+        {
+            throw new NotFoundException("Документ не найден — отвечать и сверять заявку не по чему.");
+        }
+
+        return manual;
     }
     
 
@@ -292,12 +340,9 @@ public class ChatService(
         ContestKind contestKind,
         CancellationToken ct)
     {
-        await TryCheck(chatId, userId);
+        var chat = await TryCheck(chatId, userId);
 
-        if (await manualRepository.GetManualAsync(manualId) is null)
-        {
-            throw new NotFoundException("Методичка не найдена — проверять заявку не по чему.");
-        }
+        await EnsureManualAllowedAsync(manualId, chat.Kind);
 
         var sessionId = chatId.ToString();
 
@@ -311,7 +356,7 @@ public class ChatService(
         }
 
         var applicationId = Guid.NewGuid();
-        var storageKey = StorageKeys.GrantApplication(chatId, applicationId);
+        var storageKey = StorageKeys.GrantApplication(chatId, applicationId, fileName);
 
         await fileStorage.UploadAsync(storageKey, original, ct);
 
@@ -370,17 +415,15 @@ public class ChatService(
 
         await statusHandler("Убираю персональные данные перед отправкой в модель...");
 
-        var anonymizedDocx = await docxAnonymizer.AnonymizeAsync(stored, sessionId, ct);
-
-        using var anonymizedStream = new MemoryStream(anonymizedDocx, writable: false);
-        var sections = docxTextExtractor.ExtractSections(anonymizedStream);
-
-        anonymizedStream.Position = 0;
-        var documentLines = docxTextExtractor.ExtractLines(anonymizedStream);
+        var (sections, documentLines) = IsPdf(job.FileName)
+            ? await ReadPdfApplicationAsync(stored, sessionId, ct)
+            : ReadDocxApplication(await docxAnonymizer.AnonymizeAsync(stored, sessionId, ct));
 
         if (sections.Count == 0)
         {
-            throw new InvalidDocumentException("Не удалось извлечь текст из документа — он пустой или состоит из картинок.");
+            throw new InvalidDocumentException(
+                "Не удалось извлечь текст из документа — он пустой, состоит из картинок "
+                + "или это скан без текстового слоя.");
         }
 
         var anonymizedComment = string.IsNullOrWhiteSpace(job.Comment)

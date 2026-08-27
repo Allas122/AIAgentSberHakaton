@@ -19,6 +19,7 @@ public class ManualFunctionsToolsSet(
     private const int MaxContentTokensApprox = 400;
     private const double ApproxCharsPerToken = 4.0;
     private const int MaxSearchResults = 3;
+    private const int MaxNavigationChars = 4000;
 
     private readonly RepeatCallGuard _guard = new();
     public IReadOnlyList<IChatFunctionTool> FunctionTools =>
@@ -75,7 +76,7 @@ public class ManualFunctionsToolsSet(
                         $"Сколько частей методички вернуть, от 1 до {MaxSearchResults}."
                         )
                 },
-                required: ["query", "limit"]
+                required: ["query"]
             ))
     ];
 
@@ -196,8 +197,25 @@ public class ManualFunctionsToolsSet(
         var manual = await repository.GetManualAsync(manualId);
         if (manual is null) return ManualGoneError();
 
-        var res = new GetManualFullNavigationReturn(manual.Navigation);
+        var res = new GetManualFullNavigationReturn(CapNavigation(manual.Navigation));
         return ToolJson.Serialize(res);
+    }
+
+    private string CapNavigation(string navigation)
+    {
+        if (navigation.Length <= MaxNavigationChars) return navigation;
+
+        var cut = navigation.LastIndexOf(',', MaxNavigationChars - 1);
+        var capped = navigation[..(cut > MaxNavigationChars / 2 ? cut : MaxNavigationChars)];
+
+        logger.LogDebug(
+            "Методичка {ManualId}: оглавление урезано с {Original} до {Capped} симв.",
+            manualId,
+            navigation.Length,
+            capped.Length);
+
+        return capped +
+               " … (оглавление показано не полностью — ищи недостающие разделы через search_in_manual)";
     }
 
     public async Task<string> AddManualFullNavigation(AddManualFullNavigationPartArgument arguments)

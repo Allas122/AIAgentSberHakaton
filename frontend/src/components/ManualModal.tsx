@@ -1,12 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
+import type { ManualScope } from '../api/types';
+import { ManualScope as Scope } from '../api/types';
 import { IconFile, IconUpload } from './Icons';
 
 interface Props {
   onClose: () => void;
-  onSubmit: (title: string, file: File) => Promise<void>;
+  onSubmit: (title: string, file: File, scope: ManualScope) => Promise<void>;
 }
 
-const ACCEPT = '.md';
+const ACCEPT = '.md,.txt,.docx,.pdf,.csv,.xlsx';
+const ALLOWED = ['.md', '.txt', '.docx', '.pdf', '.csv', '.xlsx'];
 const MAX_MB = 10;
 const TITLE_MIN = 4;
 const TITLE_MAX = 500;
@@ -17,6 +20,7 @@ export function ManualModal({ onClose, onSubmit }: Props) {
   const [dragging, setDragging] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [scope, setScope] = useState<ManualScope>(Scope.Staff);
 
   const inputRef = useRef<HTMLInputElement>(null);
   const titleRef = useRef<HTMLInputElement>(null);
@@ -32,8 +36,10 @@ export function ManualModal({ onClose, onSubmit }: Props) {
 
   const attach = (candidate: File | undefined | null) => {
     if (!candidate) return;
-    if (!candidate.name.toLowerCase().endsWith('.md')) {
-      setError('Положение принимается только в .md');
+    const name = candidate.name.toLowerCase();
+
+    if (!ALLOWED.some((extension) => name.endsWith(extension))) {
+      setError(`Документ принимается в форматах ${ALLOWED.join(', ')}`);
       return;
     }
     if (candidate.size > MAX_MB * 1024 * 1024) {
@@ -42,7 +48,7 @@ export function ManualModal({ onClose, onSubmit }: Props) {
     }
     setError(null);
     setFile(candidate);
-    if (!title.trim()) setTitle(candidate.name.replace(/\.md$/i, ''));
+    if (!title.trim()) setTitle(candidate.name.replace(/\.[^.]+$/, ''));
   };
 
   const titleError =
@@ -58,7 +64,7 @@ export function ManualModal({ onClose, onSubmit }: Props) {
     if (!canSubmit || !file) return;
     setBusy(true);
     try {
-      await onSubmit(title.trim(), file);
+      await onSubmit(title.trim(), file, scope);
       onClose();
     } catch {
       setBusy(false);
@@ -68,13 +74,42 @@ export function ManualModal({ onClose, onSubmit }: Props) {
   return (
     <>
       <div className="overlay" onClick={() => !busy && onClose()} />
-      <div className="modal" role="dialog" aria-modal="true" aria-label="Загрузка положения">
-        <h2 className="modal__title">Загрузить положение о гранте</h2>
+      <div className="modal" role="dialog" aria-modal="true" aria-label="Загрузка документа в базу знаний">
+        <h2 className="modal__title">Загрузить документ в базу знаний</h2>
         <p className="modal__sub">
-          Файл в формате Markdown (.md). Сначала он сохраняется в хранилище, а разбор на разделы
-          идёт в фоне — окно можно закрыть, о ходе и итогах разбора сообщу отдельно. Обычный
-          размер положения — до 256 КБ; для документов крупнее нужен вход под служебным аккаунтом.
+          Принимаются .md, .txt, .docx, .pdf, а также таблицы .csv и .xlsx — например выгрузка
+          мониторинга. Сначала файл сохраняется в хранилище, а разбор на разделы идёт в фоне —
+          окно можно закрыть, о ходе и итогах разбора сообщу отдельно. Для документов крупнее
+          256 КБ нужен вход под служебным аккаунтом.
         </p>
+
+        <div className="field" style={{ marginBottom: 16 }}>
+          <span className="label">Кому доступен</span>
+          <div className="scope-choice" role="radiogroup" aria-label="Кому доступен документ">
+            <button
+              type="button"
+              role="radio"
+              aria-checked={scope === Scope.Staff}
+              className={scope === Scope.Staff ? 'scope-choice__item is-active' : 'scope-choice__item'}
+              disabled={busy}
+              onClick={() => setScope(Scope.Staff)}
+            >
+              <span className="scope-choice__title">Служебный</span>
+              <span className="scope-choice__hint">Только в служебных чатах. Сюда — мониторинги и отчёты</span>
+            </button>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={scope === Scope.Public}
+              className={scope === Scope.Public ? 'scope-choice__item is-active' : 'scope-choice__item'}
+              disabled={busy}
+              onClick={() => setScope(Scope.Public)}
+            >
+              <span className="scope-choice__title">Общий</span>
+              <span className="scope-choice__hint">Виден всем, включая студентов и гостей</span>
+            </button>
+          </div>
+        </div>
 
         <div className="field" style={{ marginBottom: 16 }}>
           <label className="label" htmlFor="manual-title">
@@ -87,7 +122,7 @@ export function ManualModal({ onClose, onSubmit }: Props) {
             value={title}
             disabled={busy}
             onChange={(e) => setTitle(e.target.value)}
-            placeholder="Например: Положение о конкурсе 2026"
+            placeholder="Например: Мониторинг контингента 2026"
             aria-invalid={titleError !== null}
           />
           {titleError && (
@@ -128,7 +163,7 @@ export function ManualModal({ onClose, onSubmit }: Props) {
           }}
         >
           {file ? <IconFile size={22} /> : <IconUpload size={22} />}
-          <span>{file ? file.name : 'Перетащите .md или нажмите, чтобы выбрать'}</span>
+          <span>{file ? file.name : 'Перетащите файл или нажмите, чтобы выбрать'}</span>
         </button>
 
         {error && (

@@ -7,8 +7,21 @@ public static class StorageKeys
 
     public static string Manual(Guid manualId) => $"{ManualPrefix}{manualId}{ManualSuffix}";
 
-    public static string GrantApplication(Guid chatId, Guid applicationId) =>
-        $"applications/{chatId}/{applicationId}.docx";
+    public static string GrantApplication(Guid chatId, Guid applicationId, string? fileName = null) =>
+        $"applications/{chatId}/{applicationId}{ApplicationSuffix(fileName)}";
+
+    public static string LetterForm(Guid ownerId, Guid templateId) =>
+        $"letter-forms/{ownerId}/{templateId}.docx";
+
+    public static string GeneratedLetter(Guid ownerId, Guid letterId) =>
+        $"letters/{ownerId}/{letterId}.docx";
+
+    private static string ApplicationSuffix(string? fileName)
+    {
+        var extension = Path.GetExtension(fileName ?? string.Empty).ToLowerInvariant();
+
+        return extension is ".pdf" ? extension : ".docx";
+    }
 
     public static bool TryParseManual(string key, out Guid manualId)
     {

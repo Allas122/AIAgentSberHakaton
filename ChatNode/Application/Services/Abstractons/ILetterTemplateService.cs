@@ -11,4 +11,6 @@ public interface ILetterTemplateService
     Task<LetterTemplateDto> UpdateAsync(Guid ownerId, Guid templateId, UpdateLetterTemplateDto dto);
 
     Task DeleteAsync(Guid ownerId, Guid templateId);
+
+    Task<DocumentFileDto> PreviewAsync(Guid ownerId, Guid templateId, CancellationToken ct = default);
 }

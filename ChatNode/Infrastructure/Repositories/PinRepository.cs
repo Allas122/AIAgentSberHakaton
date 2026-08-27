@@ -16,7 +16,6 @@ public class PinRepository(
     IOptions<ExpirationPolicyOption> exOptions,
     ILogger<PinRepository> logger) : IPinRepository
 {
-    private const string IndexName = "idx:pins";
     private const int MaxEmbeddedChars = 2000;
     private const int DeleteBatchSize = 50;
 
@@ -149,10 +148,10 @@ public class PinRepository(
 
         foreach (var batch in keys.Chunk(DeleteBatchSize))
         {
-            await database.KeyDeleteAsync(batch);
+            await UnlinkAsync(batch);
         }
 
-        await database.KeyDeleteAsync(SessionPinsKey(sessionId));
+        await UnlinkAsync([SessionPinsKey(sessionId)]);
 
         return keys.Length;
     }
@@ -162,23 +161,14 @@ public class PinRepository(
         var ids = await database.SortedSetRangeByScoreAsync(SessionPinsKey(sessionId), order: Order.Ascending);
         if (ids.Length == 0) return [];
 
-        var pins = new List<Pin>(ids.Length);
-        var alivePinIds = new List<Guid>(ids.Length);
+        var loaded = await LoadAsync(sessionId, ParseIds(ids));
 
-        foreach (var idRaw in ids)
-        {
-            if (!Guid.TryParse(idRaw.ToString(), out var pinId)) continue;
+        var pins = loaded.Values
+            .Select(MapToPin)
+            .Where(pin => type is null || pin.Type == type)
+            .ToList();
 
-            var fields = await database.HashGetAllAsync(PinKey(sessionId, pinId));
-            if (fields.Length == 0) continue;
-
-            alivePinIds.Add(pinId);
-
-            var pin = MapToPin(fields);
-            if (type is null || pin.Type == type) pins.Add(pin);
-        }
-
-        await SustainAsync(sessionId, alivePinIds);
+        await SustainAsync(sessionId, loaded.Keys);
 
         return pins;
     }
@@ -197,18 +187,12 @@ public class PinRepository(
 
         var queryVector = EmbeddingVector.FromBytes(await EmbedAsync(query));
 
-        var matches = new List<PinMatch>(ids.Length);
-        var alivePinIds = new List<Guid>(ids.Length);
+        var loaded = await LoadAsync(sessionId, ParseIds(ids));
 
-        foreach (var idRaw in ids)
+        var matches = new List<PinMatch>(loaded.Count);
+
+        foreach (var fields in loaded.Values)
         {
-            if (!Guid.TryParse(idRaw.ToString(), out var pinId)) continue;
-
-            var fields = await database.HashGetAllAsync(PinKey(sessionId, pinId));
-            if (fields.Length == 0) continue;
-
-            alivePinIds.Add(pinId);
-
             var pin = MapToPin(fields);
             if (type is not null && pin.Type != type) continue;
 
@@ -219,7 +203,7 @@ public class PinRepository(
             if (distance <= maxDistance) matches.Add(new PinMatch(pin, distance));
         }
 
-        await SustainAsync(sessionId, alivePinIds);
+        await SustainAsync(sessionId, loaded.Keys);
 
         return matches
             .OrderBy(match => match.Distance)
@@ -237,52 +221,48 @@ public class PinRepository(
 
     private static byte[] VectorToBytes(IReadOnlyList<double> vector) => EmbeddingVector.ToBytes(vector);
 
-    private static string EscapeTag(string value) => value.Replace("-", "\\-");
-
     private async Task SustainAsync(Guid sessionId, IReadOnlyCollection<Guid> pinIds)
     {
         var ttl = TimeSpan.FromSeconds(_exOptions.PinExpirationSeconds);
 
-        await database.KeyExpireAsync(SessionPinsKey(sessionId), ttl);
-
-        foreach (var pinId in pinIds)
+        var batch = database.CreateBatch();
+        var tasks = new List<Task>(pinIds.Count + 1)
         {
-            await database.KeyExpireAsync(PinKey(sessionId, pinId), ttl);
-        }
+            batch.KeyExpireAsync(SessionPinsKey(sessionId), ttl)
+        };
+
+        tasks.AddRange(pinIds.Select(pinId => batch.KeyExpireAsync(PinKey(sessionId, pinId), ttl)));
+
+        batch.Execute();
+
+        await Task.WhenAll(tasks);
     }
 
-    private static IEnumerable<PinMatch> ParseSearchResponse(RedisResult result)
+    private async Task<Dictionary<Guid, HashEntry[]>> LoadAsync(Guid sessionId, IReadOnlyList<Guid> pinIds)
     {
-        var matches = new List<PinMatch>();
-        var rows = (RedisResult[])result!;
+        var batch = database.CreateBatch();
+        var tasks = pinIds.ToDictionary(
+            pinId => pinId,
+            pinId => batch.HashGetAllAsync(PinKey(sessionId, pinId)));
 
-        if (rows.Length <= 1) return matches;
+        batch.Execute();
 
-        for (var i = 1; i < rows.Length; i += 2)
-        {
-            var fields = (RedisResult[])rows[i + 1]!;
-            var dict = new Dictionary<string, string>();
+        await Task.WhenAll(tasks.Values);
 
-            for (var j = 0; j < fields.Length; j += 2)
-            {
-                dict[fields[j].ToString()!] = fields[j + 1].ToString()!;
-            }
-
-            if (!dict.ContainsKey("pinId")) continue;
-
-            var distance = double.TryParse(
-                dict.GetValueOrDefault("score"),
-                System.Globalization.NumberStyles.Float,
-                System.Globalization.CultureInfo.InvariantCulture,
-                out var parsed)
-                ? parsed
-                : 2.0;
-
-            matches.Add(new PinMatch(MapToPin(dict), distance));
-        }
-
-        return matches;
+        return tasks
+            .Where(pair => pair.Value.Result.Length > 0)
+            .ToDictionary(pair => pair.Key, pair => pair.Value.Result);
     }
+
+    private static List<Guid> ParseIds(RedisValue[] ids) =>
+        ids.Select(raw => Guid.TryParse(raw.ToString(), out var pinId) ? pinId : Guid.Empty)
+            .Where(pinId => pinId != Guid.Empty)
+            .ToList();
+
+    private Task UnlinkAsync(RedisKey[] keys) =>
+        keys.Length == 0
+            ? Task.CompletedTask
+            : database.ExecuteAsync("UNLINK", keys.Select(key => (object)key).ToArray());
 
     private static Pin MapToPin(HashEntry[] fields) =>
         MapToPin(fields.ToDictionary(x => x.Name.ToString(), x => x.Value.ToString()));

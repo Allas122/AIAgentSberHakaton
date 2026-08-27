@@ -14,6 +14,7 @@ public static partial class StoredManualMapper
 
     [MapperIgnoreSource(nameof(StoredManualPart.Manual))]
     [MapperIgnoreSource(nameof(StoredManualPart.Embedding))]
+    [MapperIgnoreSource(nameof(StoredManualPart.EmbeddingVector))]
     [MapperIgnoreSource(nameof(StoredManualPart.CreatedAt))]
     public static partial ManualPart MapToManualPart(this StoredManualPart stored);
 }

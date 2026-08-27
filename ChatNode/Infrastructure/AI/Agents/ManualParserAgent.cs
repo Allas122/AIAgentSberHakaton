@@ -35,6 +35,13 @@ public class ManualParserAgent(
 
     private const int PreviewLength = 90;
 
+    private static readonly string[] ParseFunctions =
+    [
+        "add_manual_part",
+        "add_manual_navigation_header",
+        "get_manual_full_navigation"
+    ];
+
     private const string ToolCallLimitMarker = "exceeded the maximum of";
 
     private const string BudgetReason = "модель исчерпала лимит вызовов инструментов на фрагмент";
@@ -238,7 +245,9 @@ public class ManualParserAgent(
             chat.Model,
             () => gigaChatClient.ChatWithToolsAsync(
                 chat,
-                manualFunctionsToolsSet.FunctionTools,
+                manualFunctionsToolsSet.FunctionTools
+                    .Where(tool => ParseFunctions.Contains(tool.Name))
+                    .ToList(),
                 maxToolCalls: MaxToolCallsPerChunk,
                 cancellationToken: ct));
     }

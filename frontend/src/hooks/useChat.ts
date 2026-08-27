@@ -20,9 +20,10 @@ import type {
   ManualData,
   ManualStatusEvent,
 } from '../api/types';
-import { manualPending, manualUsable, normalizeMessage } from '../api/types';
+import { manualPending, ManualScope, manualUsable, normalizeMessage } from '../api/types';
 
 const MANUAL_KEY = 'chatnode.manual';
+const MANUAL_STAFF_KEY = 'chatnode.manual.staff';
 const CONTEST_KEY = 'chatnode.contest';
 const MANUAL_POLL_MS = 7000;
 
@@ -53,8 +54,11 @@ export function useChat({ notify }: Options) {
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [manuals, setManuals] = useState<ManualData[]>([]);
-  const [manualId, setManualIdState] = useState<string | null>(
+  const [publicManualId, setPublicManualId] = useState<string | null>(
     () => localStorage.getItem(MANUAL_KEY),
+  );
+  const [staffManualId, setStaffManualId] = useState<string | null>(
+    () => localStorage.getItem(MANUAL_STAFF_KEY),
   );
   const [contestKind] = useState<ContestKind>(
     () => (localStorage.getItem(CONTEST_KEY) as ContestKind) || 'Individual',
@@ -65,6 +69,18 @@ export function useChat({ notify }: Options) {
   const [busy, setBusy] = useState(false);
   const [loadingThread, setLoadingThread] = useState(false);
   const [identity, setIdentity] = useState<Identity>(getIdentity);
+
+  const staffChat = useMemo(
+    () => (activeChatId ? staffChats.some((c) => c.id === activeChatId) : draftKind === 'Staff'),
+    [activeChatId, staffChats, draftKind],
+  );
+
+  const manualId = staffChat ? staffManualId : publicManualId;
+
+  const scopedManuals = useMemo(
+    () => (staffChat ? manuals : manuals.filter((m) => m.scope === 'Public')),
+    [staffChat, manuals],
+  );
 
   const hubRef = useRef<ChatHubClient | null>(null);
   const threadRef = useRef<string | null>(null);
@@ -113,9 +129,12 @@ export function useChat({ notify }: Options) {
 
   const applyManualStatus = useCallback((event: ManualStatusEvent) => {
     setManuals((list) => {
+      const known = list.find((m) => m.id === event.manualId);
+
       const next: ManualData = {
         id: event.manualId,
         title: event.title,
+        scope: known?.scope ?? ManualScope.Staff,
         stage: event.stage,
         totalChunks: event.totalChunks,
         processedChunks: event.processedChunks,
@@ -123,7 +142,7 @@ export function useChat({ notify }: Options) {
         detail: event.detail,
       };
 
-      return list.some((m) => m.id === event.manualId)
+      return known
         ? list.map((m) => (m.id === event.manualId ? next : m))
         : [next, ...list];
     });
@@ -149,11 +168,18 @@ export function useChat({ notify }: Options) {
   const applyManualStatusRef = useRef(applyManualStatus);
   applyManualStatusRef.current = applyManualStatus;
 
-  const setManualId = useCallback((id: string | null) => {
-    setManualIdState(id);
-    if (id) localStorage.setItem(MANUAL_KEY, id);
-    else localStorage.removeItem(MANUAL_KEY);
-  }, []);
+  const setManualId = useCallback(
+    (id: string | null) => {
+      const key = staffChat ? MANUAL_STAFF_KEY : MANUAL_KEY;
+
+      if (staffChat) setStaffManualId(id);
+      else setPublicManualId(id);
+
+      if (id) localStorage.setItem(key, id);
+      else localStorage.removeItem(key);
+    },
+    [staffChat],
+  );
 
   const reconnectAs = useCallback(async () => {
     const hub = hubRef.current;
@@ -356,12 +382,21 @@ export function useChat({ notify }: Options) {
     try {
       const list = await api.manuals();
       setManuals(list);
-      setManualIdState((current) => {
-        if (current && list.some((m) => m.id === current)) return current;
-        const fallback = (list.find(manualUsable) ?? list[0])?.id ?? null;
-        if (fallback) localStorage.setItem(MANUAL_KEY, fallback);
+
+      const keep = (current: string | null, available: ManualData[], key: string) => {
+        if (current && available.some((m) => m.id === current)) return current;
+
+        const fallback = (available.find(manualUsable) ?? available[0])?.id ?? null;
+
+        if (fallback) localStorage.setItem(key, fallback);
+        else localStorage.removeItem(key);
+
         return fallback;
-      });
+      };
+
+      setPublicManualId((current) =>
+        keep(current, list.filter((m) => m.scope === 'Public'), MANUAL_KEY));
+      setStaffManualId((current) => keep(current, list, MANUAL_STAFF_KEY));
     } catch (e) {
       if (!silent) notifyRef.current('error', `Методички не загрузились: ${errorText(e)}`);
     }
@@ -438,17 +473,13 @@ export function useChat({ notify }: Options) {
       if (!hub || busy) return null;
       if (!content && !file) return null;
 
-      const staffChat = activeChatId
-        ? staffChats.some((c) => c.id === activeChatId)
-        : draftKind === 'Staff';
-
       if (!manualId && !staffChat) {
-        notifyRef.current('error', 'Сначала выберите методичку — по ней агент сверяет заявку');
+        notifyRef.current('error', 'Сначала выберите документ — по нему агент отвечает и сверяет заявку');
         return null;
       }
 
       if (file && !manualId) {
-        notifyRef.current('error', 'Чтобы разобрать заявку, выберите методичку в панели слева');
+        notifyRef.current('error', 'Чтобы разобрать заявку, выберите документ в панели слева');
         return null;
       }
 
@@ -527,7 +558,9 @@ export function useChat({ notify }: Options) {
                 : 'Заявка принята, начинаю разбор…',
           }));
         } else {
-          const reply = normalizeMessage(await hub.sendMessage(chatId, content, manualId));
+          const reply = normalizeMessage(
+            await hub.sendMessage(chatId, content, manualId),
+          );
           if (inThread()) {
             setMessages((list) => (list.some((m) => m.id === reply.id) ? list : [...list, reply]));
           }
@@ -590,13 +623,13 @@ export function useChat({ notify }: Options) {
   }, [markPending]);
 
   const uploadManual = useCallback(
-    async (title: string, file: File) => {
+    async (title: string, file: File, scope: ManualScope) => {
       try {
-        const queued = await api.uploadManual(title, file);
-        notifyRef.current('info', queued.message || `«${title}» сохранена, начинаю разбор`);
+        const queued = await api.uploadManual(title, file, scope);
+        notifyRef.current('info', queued.message || `«${title}» сохранён, начинаю разбор`);
         await refreshManuals();
       } catch (e) {
-        notifyRef.current('error', `Не удалось загрузить методичку: ${errorText(e)}`);
+        notifyRef.current('error', `Не удалось загрузить документ: ${errorText(e)}`);
         throw e;
       }
     },
@@ -619,20 +652,18 @@ export function useChat({ notify }: Options) {
     [manuals, manualId],
   );
 
-  const staffChat = activeChat ? activeChat.kind === 'Staff' : draftKind === 'Staff';
-
   const blockedReason = useMemo(() => {
     if (staffChat) return null;
 
-    if (manuals.length === 0) return 'Сначала загрузите положение о гранте — сверять пока не с чем';
-    if (!manualId) return 'Выберите положение о гранте в панели слева';
+    if (scopedManuals.length === 0) return 'Сначала загрузите документ в базу знаний — отвечать пока не по чему';
+    if (!manualId) return 'Выберите документ базы знаний в панели слева';
 
     if (activeManual && manualPending(activeManual)) {
       const progress =
         activeManual.totalChunks > 0
           ? ` (${activeManual.processedChunks} из ${activeManual.totalChunks} фрагментов)`
           : '';
-      return `«${activeManual.title}» ещё разбирается${progress} — выберите другое положение или дождитесь конца разбора`;
+      return `«${activeManual.title}» ещё разбирается${progress} — выберите другой документ или дождитесь конца разбора`;
     }
 
     if (activeManual?.stage === 'Failed') {
@@ -640,7 +671,7 @@ export function useChat({ notify }: Options) {
     }
 
     return null;
-  }, [staffChat, manuals.length, manualId, activeManual]);
+  }, [staffChat, scopedManuals.length, manualId, activeManual]);
 
   return {
     connection,
@@ -650,7 +681,7 @@ export function useChat({ notify }: Options) {
     activeChat,
     staffChat,
     messages,
-    manuals,
+    manuals: scopedManuals,
     manualId,
     activeManual,
     blockedReason,

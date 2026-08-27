@@ -22,7 +22,22 @@ public class ComposeLetterRequestValidator : AbstractValidator<ComposeLetterRequ
         {
             RuleFor(x => x.File!)
                 .MaxFileSize(UploadLimits.MaxDocxBytes)
-                .AllowedExtensions([".docx"]).WithMessage("Письмо принимается в формате .docx");
+                .AllowedExtensions([".docx", ".pdf"])
+                .WithMessage("Письмо принимается в формате .docx или .pdf");
         });
+
+        RuleFor(x => x.AddresseeName)
+            .MaximumLength(300).WithMessage("ФИО адресата длиннее 300 символов.");
+
+        RuleFor(x => x.AddresseePosition)
+            .MaximumLength(300).WithMessage("Должность адресата длиннее 300 символов.");
+
+        RuleFor(x => x.OutgoingNumber).MaximumLength(100);
+        RuleFor(x => x.OutgoingDate).MaximumLength(100);
+        RuleFor(x => x.ReplyToNumber).MaximumLength(100);
+        RuleFor(x => x.ReplyToDate).MaximumLength(100);
+
+        RuleFor(x => x.AddresseeSalutation)
+            .MaximumLength(300).WithMessage("Обращение длиннее 300 символов.");
     }
 }

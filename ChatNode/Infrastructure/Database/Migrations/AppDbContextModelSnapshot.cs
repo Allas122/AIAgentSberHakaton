@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
+using Pgvector;
 
 #nullable disable
 
@@ -20,6 +21,7 @@ namespace ChatNode.Infrastructure.Database.Migrations
                 .HasAnnotation("ProductVersion", "10.0.11")
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
+            NpgsqlModelBuilderExtensions.HasPostgresExtension(modelBuilder, "vector");
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
             modelBuilder.Entity("ChatNode.Infrastructure.Database.Entities.StoredDocument", b =>
@@ -83,6 +85,11 @@ namespace ChatNode.Infrastructure.Database.Migrations
                     b.Property<int>("ProcessedChunks")
                         .HasColumnType("integer");
 
+                    b.Property<string>("Scope")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
                     b.Property<string>("Stage")
                         .IsRequired()
                         .HasMaxLength(32)
@@ -105,6 +112,8 @@ namespace ChatNode.Infrastructure.Database.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("Scope");
+
                     b.ToTable("manuals", (string)null);
                 });
 
@@ -124,6 +133,9 @@ namespace ChatNode.Infrastructure.Database.Migrations
                     b.Property<byte[]>("Embedding")
                         .IsRequired()
                         .HasColumnType("bytea");
+
+                    b.Property<Vector>("EmbeddingVector")
+                        .HasColumnType("vector(1024)");
 
                     b.Property<Guid>("ManualId")
                         .HasColumnType("uuid");
@@ -234,6 +246,47 @@ namespace ChatNode.Infrastructure.Database.Migrations
                     b.ToTable("application_review_criteria", (string)null);
                 });
 
+            modelBuilder.Entity("ChatNode.Infrastructure.Database.Entities.TokenUsageAggregate", b =>
+                {
+                    b.Property<double>("BalanceSpent")
+                        .HasColumnType("double precision");
+
+                    b.Property<long>("Calls")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("CompletionTokens")
+                        .HasColumnType("bigint");
+
+                    b.Property<double>("DurationSeconds")
+                        .HasColumnType("double precision");
+
+                    b.Property<long>("FailedCalls")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("Model")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<int>("Operation")
+                        .HasColumnType("integer");
+
+                    b.Property<long>("PartialCalls")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("PromptTokens")
+                        .HasColumnType("bigint");
+
+                    b.Property<double>("SlowestSeconds")
+                        .HasColumnType("double precision");
+
+                    b.Property<long>("TotalTokens")
+                        .HasColumnType("bigint");
+
+                    b.ToTable((string)null);
+
+                    b.ToView(null, (string)null);
+                });
+
             modelBuilder.Entity("Domain.Entities.Assignment", b =>
                 {
                     b.Property<Guid>("Id")
@@ -292,6 +345,95 @@ namespace ChatNode.Infrastructure.Database.Migrations
                     b.ToTable("assignments", (string)null);
                 });
 
+            modelBuilder.Entity("Domain.Entities.Dataset", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("ManualId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("OwnerId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("RowCount")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("SheetName")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ManualId");
+
+                    b.HasIndex("OwnerId");
+
+                    b.ToTable("datasets", (string)null);
+                });
+
+            modelBuilder.Entity("Domain.Entities.DatasetColumn", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("DatasetId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<int>("Ordinal")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DatasetId");
+
+                    b.ToTable("dataset_columns", (string)null);
+                });
+
+            modelBuilder.Entity("Domain.Entities.DatasetRow", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("DatasetId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("Ordinal")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Values")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DatasetId");
+
+                    b.ToTable("dataset_rows", (string)null);
+                });
+
             modelBuilder.Entity("Domain.Entities.LetterTemplate", b =>
                 {
                     b.Property<Guid>("Id")
@@ -305,6 +447,21 @@ namespace ChatNode.Infrastructure.Database.Migrations
 
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("FormFileName")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<string>("FormPlaceholders")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<long?>("FormSizeBytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("FormStorageKey")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
 
                     b.Property<string>("Name")
                         .IsRequired()
@@ -326,6 +483,115 @@ namespace ChatNode.Infrastructure.Database.Migrations
                     b.HasIndex("OwnerId", "CreatedAt");
 
                     b.ToTable("letter_templates", (string)null);
+                });
+
+            modelBuilder.Entity("Domain.Entities.OrganizationProfile", b =>
+                {
+                    b.Property<Guid>("OwnerId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Address")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<string>("ContactEmail")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<string>("ContactName")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<string>("ContactPhone")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<string>("ContactPosition")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<string>("Email")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<string>("ExecutorName")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<string>("ExecutorPhone")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<string>("Fax")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<string>("FullName")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<string>("Inn")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)");
+
+                    b.Property<string>("Kpp")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)");
+
+                    b.Property<string>("Ogrn")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)");
+
+                    b.Property<string>("Okpo")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)");
+
+                    b.Property<string>("Phone")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<string>("ShortName")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<string>("SignerName")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<string>("SignerPosition")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Website")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.HasKey("OwnerId");
+
+                    b.ToTable("organization_profiles", (string)null);
                 });
 
             modelBuilder.Entity("Domain.Entities.TokenUsage", b =>
@@ -448,6 +714,33 @@ namespace ChatNode.Infrastructure.Database.Migrations
                     b.Navigation("Review");
                 });
 
+            modelBuilder.Entity("Domain.Entities.Dataset", b =>
+                {
+                    b.HasOne("ChatNode.Infrastructure.Database.Entities.StoredManual", null)
+                        .WithMany()
+                        .HasForeignKey("ManualId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Domain.Entities.DatasetColumn", b =>
+                {
+                    b.HasOne("Domain.Entities.Dataset", null)
+                        .WithMany("Columns")
+                        .HasForeignKey("DatasetId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Domain.Entities.DatasetRow", b =>
+                {
+                    b.HasOne("Domain.Entities.Dataset", null)
+                        .WithMany("Rows")
+                        .HasForeignKey("DatasetId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("ChatNode.Infrastructure.Database.Entities.StoredManual", b =>
                 {
                     b.Navigation("Parts");
@@ -456,6 +749,13 @@ namespace ChatNode.Infrastructure.Database.Migrations
             modelBuilder.Entity("ChatNode.Infrastructure.Database.Entities.StoredReview", b =>
                 {
                     b.Navigation("Criteria");
+                });
+
+            modelBuilder.Entity("Domain.Entities.Dataset", b =>
+                {
+                    b.Navigation("Columns");
+
+                    b.Navigation("Rows");
                 });
 #pragma warning restore 612, 618
         }

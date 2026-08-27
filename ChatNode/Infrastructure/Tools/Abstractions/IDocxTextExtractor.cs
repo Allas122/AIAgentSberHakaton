@@ -7,4 +7,6 @@ public interface IDocxTextExtractor
     IReadOnlyList<ApplicationSectionDto> ExtractSections(Stream docxStream);
 
     IReadOnlyList<string> ExtractLines(Stream docxStream);
+
+    string ExtractMarkdown(Stream docxStream);
 }

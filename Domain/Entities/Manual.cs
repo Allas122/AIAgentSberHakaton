@@ -10,7 +10,8 @@ public record Manual(
     int TotalChunks = 0,
     int ProcessedChunks = 0,
     int FailedChunks = 0,
-    string? StatusDetail = null);
+    string? StatusDetail = null,
+    ManualScope Scope = ManualScope.Staff);
 
 public record ManualStatus(
     Guid ManualId,

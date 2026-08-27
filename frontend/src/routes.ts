@@ -8,9 +8,17 @@ export const routes = {
   files: '/files',
   accounts: '/accounts',
   usage: '/usage',
+  organization: '/organization',
 } as const;
 
-export type Section = 'chat' | 'letters' | 'assignments' | 'files' | 'accounts' | 'usage';
+export type Section =
+  | 'chat'
+  | 'letters'
+  | 'assignments'
+  | 'files'
+  | 'accounts'
+  | 'usage'
+  | 'organization';
 
 export const STAFF_ROLES = ['Rector', 'Coordinator'];
 
@@ -25,6 +33,7 @@ export function sectionFrom(pathname: string): Section {
   if (pathname.startsWith(routes.files)) return 'files';
   if (pathname.startsWith(routes.accounts)) return 'accounts';
   if (pathname.startsWith(routes.usage)) return 'usage';
+  if (pathname.startsWith(routes.organization)) return 'organization';
   return 'chat';
 }
 
@@ -35,6 +44,7 @@ export const SECTION_TITLES: Record<Section, string> = {
   files: 'Загруженные файлы',
   accounts: 'Учётные записи',
   usage: 'Расход токенов',
+  organization: 'Организация и подпись',
 };
 
 export const isGuest = (identity: Identity) => identity.role === 'Guest';

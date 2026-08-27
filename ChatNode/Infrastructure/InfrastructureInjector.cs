@@ -1,5 +1,6 @@
 ﻿using ChatNode.Infrastructure.AI.Configuration;
 using ChatNode.Infrastructure.AI.Metering;
+using ChatNode.Infrastructure.Analytics;
 using ChatNode.Infrastructure.Auth;
 using ChatNode.Infrastructure.Auth.Abstractions;
 using ChatNode.Infrastructure.Configuration;
@@ -56,6 +57,7 @@ public static class InfrastructureInjector
         services.AddStorage();
 
         services.AddHostedService<ValkeyIndexInitializer>();
+        services.AddHostedService<EmbeddingBackfill>();
 
         services.AddSingleton<IReviewQueue, ValkeyReviewQueue>();
         services.AddSingleton<IReviewStatusStore, ValkeyReviewStatusStore>();
@@ -71,12 +73,14 @@ public static class InfrastructureInjector
         
         services.AddScoped<IUserRepository, UserRepository>();
         services.AddScoped<IChatRepository, ChatRepository>();
-        services.AddScoped<ManualCache>();
         services.AddScoped<IManualRepository, ManualRepository>();
         services.AddScoped<IPinRepository, PinRepository>();
         services.AddScoped<IAssignmentRepository, AssignmentRepository>();
         services.AddScoped<IReviewRepository, ReviewRepository>();
         services.AddScoped<ILetterTemplateRepository, LetterTemplateRepository>();
+        services.AddScoped<IOrganizationProfileRepository, OrganizationProfileRepository>();
+        services.AddScoped<IDatasetRepository, DatasetRepository>();
+        services.AddScoped<IDatasetQueryRunner, DatasetQueryRunner>();
         services.AddScoped<ITokenUsageRepository, TokenUsageRepository>();
         services.AddScoped<ITokenMeter, TokenMeter>();
         services.AddSingleton<BalanceProbe>();
@@ -91,7 +95,10 @@ public static class InfrastructureInjector
         services.AddScoped<IDocxAnonymizer, DocxAnonymizer>();
         services.AddSingleton<IDocxTextExtractor, DocxTextExtractor>();
         services.AddSingleton<IDocxWriter, DocxWriter>();
-        
+        services.AddSingleton<IPdfTextExtractor, PdfTextExtractor>();
+        services.AddSingleton<IDocxTemplateFiller, DocxTemplateFiller>();
+        services.AddSingleton<IKnowledgeDocumentReader, KnowledgeDocumentReader>();
+
         return services;
     }
 }

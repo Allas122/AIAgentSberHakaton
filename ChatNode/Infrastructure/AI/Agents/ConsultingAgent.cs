@@ -4,6 +4,7 @@ using ChatNode.Infrastructure.AI.Functions;
 using ChatNode.Infrastructure.AI.Metering;
 using ChatNode.Infrastructure.AI.Policy;
 using ChatNode.Infrastructure.AI.Services.Abstractions;
+using ChatNode.Infrastructure.Analytics;
 using ChatNode.Infrastructure.Dto;
 using Domain.Repositories;
 using Domain.ValueTypes;
@@ -27,7 +28,9 @@ public class ConsultingAgent : IAgent
         "get_application_review",
         "get_current_datetime",
         "resolve_date",
-        "date_difference"
+        "date_difference",
+        "list_datasets",
+        "query_dataset"
     ];
 
     private static readonly string[] StaffFunctions =
@@ -42,6 +45,8 @@ public class ConsultingAgent : IAgent
     private IAssignmentRepository _assignmentRepository;
     private IUserRepository _userRepository;
     private IReviewRepository _reviewRepository;
+    private IDatasetRepository _datasetRepository;
+    private IDatasetQueryRunner _datasetQueryRunner;
     private IAnonymizeClient _anonymizeClient;
     private ITokenMeter _tokenMeter;
     private Func<string, Task> _statusHandler;
@@ -56,6 +61,8 @@ public class ConsultingAgent : IAgent
         IAssignmentRepository assignmentRepository,
         IUserRepository userRepository,
         IReviewRepository reviewRepository,
+        IDatasetRepository datasetRepository,
+        IDatasetQueryRunner datasetQueryRunner,
         IAnonymizeClient anonymizeClient,
         ITokenMeter tokenMeter,
         IGigaChatClient gigaChatClient,
@@ -71,6 +78,8 @@ public class ConsultingAgent : IAgent
         _assignmentRepository = assignmentRepository;
         _userRepository = userRepository;
         _reviewRepository = reviewRepository;
+        _datasetRepository = datasetRepository;
+        _datasetQueryRunner = datasetQueryRunner;
         _anonymizeClient = anonymizeClient;
         _tokenMeter = tokenMeter;
         _statusHandler = statusHandler;
@@ -115,6 +124,12 @@ public class ConsultingAgent : IAgent
             TimeProvider.System,
             _session.ResolveTimeZone(_gigaChatOptions.AgentTimeZoneId))).FunctionTools;
 
+        var datasetTools = (new DatasetFunctionToolsSet(
+            _datasetRepository,
+            _datasetQueryRunner,
+            IsStaffChat ? null : ManualScope.Public,
+            _loggerFactory.CreateLogger<DatasetFunctionToolsSet>())).FunctionTools;
+
         var allowed = IsStaffChat ? [.. SharedFunctions, .. StaffFunctions] : SharedFunctions;
 
         return manualTools
@@ -123,6 +138,7 @@ public class ConsultingAgent : IAgent
             .Concat(assignmentTools)
             .Concat(reviewTools)
             .Concat(calendarTools)
+            .Concat(datasetTools)
             .Where(s => allowed.Contains(s.Name))
             .ToList();
     }
@@ -177,20 +193,37 @@ public class ConsultingAgent : IAgent
         return res.Message.Content;
     }
 
-    private string BuildSystemPrompt() => Head + Assignments + Tail;
+    private string BuildSystemPrompt() => Head + Datasets + Assignments + Tail;
+
+    private string Datasets => @"
+Про таблицы базы знаний (мониторинги, выгрузки, реестры):
+- list_datasets показывает загруженные таблицы, их колонки и примеры значений. Вызывай его
+  ПЕРВЫМ, прежде чем считать что-либо: без точных названий колонок запрос не построить.
+- query_dataset считает по таблице: сколько строк подходит под условия, сумму, среднее,
+  минимум, максимум, при необходимости с разбивкой по группам.
+- Числа СЧИТАЕТ КОД, а не ты. Полученное значение переноси в ответ дословно и не пересчитывай,
+  не округляй и не прикидывай на глаз. Сам по строкам таблицы не считай никогда.
+- Если в ответе инструмента есть notes, перескажи их пользователю: там сказано, какие строки
+  пропущены и каких колонок не нашлось.
+- Если подходящей таблицы нет, честно скажи об этом и предложи загрузить мониторинг
+  в формате .csv или .xlsx — выдумывать цифры запрещено.
+";
 
     private string Head => HasManual
         ? @"
-Ты - Агент консультант, у тебя есть доступ к чтению из методички.
-Твоя главная цель отвечать на вопросы клиентов, ты обязан ссылаться только на методичку и ничего более.
+Ты - Агент консультант, у тебя есть доступ к чтению из документа базы знаний.
+Твоя главная цель отвечать на вопросы клиентов. Отвечая про требования и правила, опирайся
+только на этот документ и ничего более: своих знаний о них у тебя нет.
 
 Что ты можешь делать:
-1. get_manual_full_navigation - Для просмотра оглавления методички.
+1. get_manual_full_navigation - Для просмотра оглавления документа.
 2. search_in_manual - Найти конкретный текст.
 3. ОБЯЗАТЕЛЬНО: Перед каждым поиском или анализом вызывай send_status_of_processing, чтобы юзер не скучал.
 4. get_pins и search_pins - Посмотреть замечания по заявке, которую проверяли в этом чате.
 5. list_assignments - Посмотреть поручения пользователя.
 6. get_application_review - Поднять результат проверки заявки: баллы по критериям и замечания.
+7. list_datasets и query_dataset - Посчитать по таблицам базы знаний: мониторингам, выгрузкам, реестрам.
+   Это отдельный источник, он не противоречит пункту про документ: цифры берутся оттуда.
 "
         : @"
 Ты - Агент консультант в служебном чате сотрудников.
@@ -198,9 +231,12 @@ public class ConsultingAgent : IAgent
 
 Что ты можешь делать:
 1. ОБЯЗАТЕЛЬНО: Перед каждым поиском или анализом вызывай send_status_of_processing, чтобы юзер не скучал.
-2. get_pins и search_pins - Посмотреть замечания по заявке, которую проверяли в этом чате.
-3. list_assignments - Посмотреть поручения пользователя.
-4. get_application_review - Поднять результат проверки заявки: баллы по критериям и замечания.
+2. create_assignment - Завести поручение. Это твоя основная работа в этом чате.
+3. update_assignment_status - Сменить состояние поручения.
+4. list_assignments - Посмотреть поручения пользователя.
+5. get_pins и search_pins - Посмотреть замечания по заявке, которую проверяли в этом чате.
+6. get_application_review - Поднять результат проверки заявки: баллы по критериям и замечания.
+7. list_datasets и query_dataset - Посчитать по таблицам базы знаний.
 
 Не ссылайся на методичку и не обещай найти в ней текст. Если вопрос упирается в её требования,
 честно скажи, что в служебном чате её нет, и предложи открыть чат с выбранной методичкой.
@@ -281,14 +317,14 @@ public class ConsultingAgent : IAgent
         ? @"Запрет на выдумывание:
 - Отвечай только тем, что реально нашёл через search_in_manual в ЭТОМ ходе диалога.
 - Если после поиска (в том числе с разными формулировками запроса) релевантного текста не нашлось —
-  прямо скажи пользователю, что не нашёл эту информацию в методичке, и не заполняй пустоту общими
-  фразами о грантах и заявках. Общие фразы без опоры на найденный текст запрещены.
+  прямо скажи пользователю, что не нашёл эту информацию в документе, и не заполняй пустоту общими
+  фразами по теме. Общие фразы без опоры на найденный текст запрещены.
 - Если структура/правило состоит из нескольких частей (например, было разделено на ""Часть 1"", ""Часть 2""
   при индексации) — ищи и объединяй все части перед ответом, а не ограничивайся первым найденным фрагментом.
 "
         : @"Запрет на выдумывание:
 - Отвечай только тем, что реально подняли инструменты в ЭТОМ ходе диалога.
-- Если данных нет, прямо скажи об этом и не заполняй пустоту общими фразами о грантах и заявках.
+- Если данных нет, прямо скажи об этом и не заполняй пустоту общими фразами по теме.
   Общие фразы без опоры на поднятые данные запрещены.
 ";
 

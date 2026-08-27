@@ -25,6 +25,7 @@ interface Props {
   activeChatId: string | null;
   manuals: ManualData[];
   manualId: string | null;
+  staffChat: boolean;
   identity: Identity;
   view: Section;
   theme: Theme;
@@ -41,12 +42,19 @@ interface Props {
   onClose: () => void;
 }
 
+const manualOption = (m: ManualData) => (
+  <option key={m.id} value={m.id}>
+    {m.stage === 'Ready' ? m.title : `${m.title} — ${MANUAL_STAGE_LABELS[m.stage]}`}
+  </option>
+);
+
 export function Sidebar({
   chats,
   staffChats,
   activeChatId,
   manuals,
   manualId,
+  staffChat,
   identity,
   view,
   theme,
@@ -67,6 +75,14 @@ export function Sidebar({
   const [deleting, setDeleting] = useState<string | null>(null);
 
   const canUploadManual = isStaff(identity);
+
+  const manualGroups = useMemo(
+    () => ({
+      staff: manuals.filter((m) => m.scope === 'Staff'),
+      common: manuals.filter((m) => m.scope === 'Public'),
+    }),
+    [manuals],
+  );
 
   const selectedManual = useMemo(
     () => manuals.find((m) => m.id === manualId) ?? null,
@@ -161,7 +177,7 @@ export function Sidebar({
           <span className="brand__mark">
             <IconLogo size={16} />
           </span>
-          <span className="brand__name">Грант-консультант</span>
+          <span className="brand__name">ИИ-помощник проректора</span>
         </div>
         <button className="icon-btn" onClick={onClose} title="Скрыть панель" aria-label="Скрыть панель">
           <IconSidebar />
@@ -242,6 +258,17 @@ export function Sidebar({
                 Учётки
               </Link>
             )}
+            {identity.role === 'Rector' && (
+              <Link
+                className="view-tab"
+                role="tab"
+                to={routes.organization}
+                aria-selected={view === 'organization'}
+                onClick={() => onSelectView('organization')}
+              >
+                Организация
+              </Link>
+            )}
           </div>
         </div>
       )}
@@ -269,7 +296,7 @@ export function Sidebar({
           )}
 
         <div className="sidebar__label">
-          <span>Методология</span>
+          <span>База знаний</span>
         </div>
 
         <div className="sidebar__block">
@@ -278,17 +305,26 @@ export function Sidebar({
               <select
                 value={manualId ?? ''}
                 onChange={(e) => onSelectManual(e.target.value)}
-                aria-label="Положение о гранте"
+                aria-label="Документ базы знаний"
                 disabled={manuals.length === 0}
               >
                 {manuals.length === 0 ? (
-                  <option value="">Нет загруженных положений</option>
+                  <option value="">Нет загруженных документов</option>
+                ) : staffChat ? (
+                  <>
+                    {manualGroups.staff.length > 0 && (
+                      <optgroup label="Служебные">
+                        {manualGroups.staff.map(manualOption)}
+                      </optgroup>
+                    )}
+                    {manualGroups.common.length > 0 && (
+                      <optgroup label="Общие">
+                        {manualGroups.common.map(manualOption)}
+                      </optgroup>
+                    )}
+                  </>
                 ) : (
-                  manuals.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.stage === 'Ready' ? m.title : `${m.title} — ${MANUAL_STAGE_LABELS[m.stage]}`}
-                    </option>
-                  ))
+                  manuals.map(manualOption)
                 )}
               </select>
               <IconChevron className="select__chevron" />
