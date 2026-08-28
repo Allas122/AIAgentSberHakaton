@@ -216,7 +216,7 @@ export default function App() {
             placeholder={
               offline
                 ? 'Нет связи с сервером — переподключаюсь…'
-                : 'Спросите про заявку или приложите документ…'
+                : 'Спросите про мониторинг или письмо…'
             }
             onSend={(text, file) => void send(text, file)}
           />
