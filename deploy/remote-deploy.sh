@@ -67,7 +67,7 @@ fi
 
 DUMP="$BACKUP_DIR/predeploy-$STAMP.dump"
 log "dumping postgres -> $DUMP"
-if ! compose exec -T postgres sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > "$DUMP"; then
+if ! compose exec -T postgres sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > "$DUMP" < /dev/null; then
   rm -f "$DUMP"
   die "pg_dump failed, nothing was changed"
 fi

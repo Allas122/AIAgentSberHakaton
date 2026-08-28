@@ -47,17 +47,17 @@ jobs:
             "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
             "docker login ghcr.io -u '${{ github.actor }}' --password-stdin"
 
-      - name: Sync compose files
+      - name: Sync compose files and deploy script
         run: |
           scp -i ~/.ssh/id_deploy -o BatchMode=yes \
-            docker-compose.yml docker-compose.prod.yml \
+            docker-compose.yml docker-compose.prod.yml deploy/remote-deploy.sh \
             "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:/home/${{ secrets.DEPLOY_USER }}/app/"
 
       - name: Run deploy
         run: |
           ssh -i ~/.ssh/id_deploy -o BatchMode=yes \
             "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
-            "IMAGE_TAG='${{ inputs.tag }}' ROLLBACK_ON_FAILURE='${{ inputs.rollback_on_failure && '1' || '0' }}' bash -s" < deploy/remote-deploy.sh
+            "IMAGE_TAG='${{ inputs.tag }}' ROLLBACK_ON_FAILURE='${{ inputs.rollback_on_failure && '1' || '0' }}' bash /home/${{ secrets.DEPLOY_USER }}/app/remote-deploy.sh" < /dev/null
 
       - name: Log out of GHCR on the server
         if: always()

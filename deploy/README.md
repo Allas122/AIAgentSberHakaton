@@ -11,6 +11,8 @@
 
 Сборка отделена от выката намеренно: каждый push в `main` готовит образы, но на прод ничего не попадает, пока не нажата кнопка.
 
+`remote-deploy.sh` **копируется на сервер и запускается как файл**, а не передаётся в `bash -s` через stdin. Это принципиально: внутри есть `docker compose exec -T`, который читает stdin и в потоковом варианте съедает остаток скрипта — bash доходит до EOF и выходит с кодом 0, то есть деплой обрывается после дампа и рапортует об успехе.
+
 Образы в GHCR:
 
 - `ghcr.io/allas122/aiagentsberhakaton/chatnode`
@@ -115,12 +117,12 @@ Settings → Secrets and variables → Actions → вкладка **Variables**.
 
 ## Что живёт только на сервере
 
-`~/app/.env` — в git его нет и быть не должно (репозиторий публичный). Деплой копирует на сервер только `docker-compose.yml` и `docker-compose.prod.yml`, `.env` не трогает. Новую переменную нужно добавить руками на сервере **до** выката, иначе применится дефолт из `docker-compose.yml`.
+`~/app/.env` — в git его нет и быть не должно (репозиторий публичный). Деплой копирует на сервер `docker-compose.yml`, `docker-compose.prod.yml` и `remote-deploy.sh`, `.env` не трогает. Новую переменную нужно добавить руками на сервере **до** выката, иначе применится дефолт из `docker-compose.yml`.
 
 ## Ручной запуск с сервера
 
 ```bash
 ssh <DEPLOY_USER>@<DEPLOY_HOST>
 cd ~/app
-IMAGE_TAG=latest bash ~/remote-deploy.sh
+IMAGE_TAG=latest bash ~/app/remote-deploy.sh
 ```
