@@ -233,7 +233,22 @@ AppPackages/
 
 .env
 **/.env
+**/.env.*
 !.env.example
+!**/.env.example
+
+*.pem
+*.key
+*.ppk
+id_rsa*
+id_ecdsa*
+id_ed25519*
+deploy_key*
+*.p12
+*.pfx
+secrets.json
+appsettings.Production.json
+appsettings.*.Local.json
 
 CLAUDE.md
 .claude/

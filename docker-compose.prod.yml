@@ -1,0 +1,12 @@
+services:
+  anonymizer:
+    build: !reset null
+    image: ${REGISTRY:-ghcr.io}/${IMAGE_NAMESPACE:-allas122/aiagentsberhakaton}/anonymizer:${IMAGE_TAG:-latest}
+
+  chatnode:
+    build: !reset null
+    image: ${REGISTRY:-ghcr.io}/${IMAGE_NAMESPACE:-allas122/aiagentsberhakaton}/chatnode:${IMAGE_TAG:-latest}
+
+  web:
+    build: !reset null
+    image: ${REGISTRY:-ghcr.io}/${IMAGE_NAMESPACE:-allas122/aiagentsberhakaton}/web:${IMAGE_TAG:-latest}
