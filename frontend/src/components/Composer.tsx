@@ -149,8 +149,8 @@ export function Composer({
             className="icon-btn"
             onClick={() => inputRef.current?.click()}
             disabled={disabled || busy}
-            title="Приложить заявку (.docx или .pdf)"
-            aria-label="Приложить заявку"
+            title="Приложить документ (.docx или .pdf)"
+            aria-label="Приложить документ"
           >
             <IconClip />
           </button>
@@ -161,7 +161,7 @@ export function Composer({
             rows={1}
             value={text}
             disabled={disabled}
-            placeholder={placeholder ?? 'Спросите про заявку или приложите документ…'}
+            placeholder={placeholder ?? 'Спросите про мониторинг или письмо…'}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={onKeyDown}
             aria-label="Сообщение"
