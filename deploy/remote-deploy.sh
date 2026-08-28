@@ -7,6 +7,7 @@ BACKUP_KEEP="${BACKUP_KEEP:-10}"
 IMAGE_TAG="${IMAGE_TAG:-latest}"
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-240}"
 ROLLBACK_ON_FAILURE="${ROLLBACK_ON_FAILURE:-1}"
+ROLLBACK_KEEP="${ROLLBACK_KEEP:-3}"
 REGISTRY="${REGISTRY:-ghcr.io}"
 IMAGE_NAMESPACE="${IMAGE_NAMESPACE:-allas122/aiagentsberhakaton}"
 
@@ -146,6 +147,16 @@ fi
 
 ls -1t "$BACKUP_DIR"/predeploy-*.dump 2>/dev/null | tail -n +$((BACKUP_KEEP + 1)) | xargs -r rm -f
 ls -1t "$BACKUP_DIR"/rollback-*.txt 2>/dev/null | tail -n +$((BACKUP_KEEP + 1)) | xargs -r rm -f
+
+for svc in $SERVICES; do
+  docker images --format '{{.Repository}}:{{.Tag}}' "$REGISTRY/$IMAGE_NAMESPACE/$svc" 2>/dev/null \
+    | grep ':rollback-' \
+    | sort -r \
+    | tail -n +$((ROLLBACK_KEEP + 1)) \
+    | while read -r stale; do
+        docker rmi "$stale" >/dev/null 2>&1 || true
+      done
+done
 
 docker image prune -f >/dev/null 2>&1 || true
 
